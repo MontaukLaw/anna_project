@@ -1,0 +1,9 @@
+customtkinter>=5.2.2,<6
+Pillow>=11,<13
+openpyxl>=3.1.5,<4
+pypdf>=5,<7
+# This wheel bundles the PP-OCRv4 detection/recognition and orientation ONNX models.
+rapidocr==3.4.0
+onnxruntime>=1.20,<2
+numpy>=2,<3
+opencv-python>=4.10,<6

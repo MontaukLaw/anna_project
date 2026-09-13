@@ -1,0 +1,12 @@
+{
+  "jp_product_file": "D:\\AI\\ANNA_PROJECT\\9-12\\PY_SCRIPT\\PACKING\\JP产品净重毛重外箱尺寸表20241209.xlsx",
+  "jp_product_confirmed": true,
+  "order_schedule_file": "D:\\AI\\ANNA_PROJECT\\9-12\\PY_SCRIPT\\PACKING\\2026年 可图雅JP订单分类排期汇总（9-12更新).xlsx",
+  "order_schedule_confirmed": true,
+  "selected_image_file": "D:\\AI\\ANNA_PROJECT\\9-12\\需要做的箱单明细.png",
+  "selected_image_confirmed": true,
+  "order_pdf_directory_file": "D:\\AI\\ANNA_PROJECT\\9-12",
+  "order_pdf_directory_confirmed": true,
+  "output_directory_file": "D:\\AI\\ANNA_PROJECT\\9-12\\output4",
+  "output_directory_confirmed": true
+}
