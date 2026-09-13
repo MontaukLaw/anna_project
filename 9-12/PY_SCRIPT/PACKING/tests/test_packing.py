@@ -23,24 +23,25 @@ class PackingTests(unittest.TestCase):
         row = PackingRow(item, '2466KTY01', Decimal('2'), Decimal('3'), Decimal('10'), Decimal('20'), Decimal('30'), 'Toy duck', 'JP row 6', date(2026,9,17))
         for count in (1, 4, 7):
             content = build_packing_excel(PACKING_TEMPLATE, 'POHK-26-12345-001', 'Customer', [row]*count)
-            book = load_workbook(BytesIO(content), data_only=True)
+            book = load_workbook(BytesIO(content), data_only=False)
             try:
                 sheet = book.active
                 self.assertEqual(sheet['B20'].value, '000123')
                 self.assertEqual(sheet['F20'].value, 10)
-                self.assertAlmostEqual(sheet['Q20'].value, .006)
-                self.assertAlmostEqual(sheet['S20'].value, .060)
-                self.assertEqual(sheet['U20'].value, 20)
-                self.assertEqual(sheet['W20'].value, 30)
-                self.assertEqual(sheet.cell(20+count,5).value,120*count)
-                self.assertEqual(sheet.cell(20+count,6).value,10*count)
+                self.assertEqual(sheet['Q20'].value, '=K20*M20*O20/1000000')
+                self.assertEqual(sheet['Q20'].number_format, '0.000')
+                self.assertEqual(sheet['S20'].value, '=Q20*F20')
+                self.assertEqual(sheet['U20'].value, '=G20*F20')
+                self.assertEqual(sheet['W20'].value, '=I20*F20')
+                self.assertEqual(sheet.cell(20+count,5).value,f'=SUM(E20:E{19+count})')
+                self.assertEqual(sheet.cell(20+count,6).value,f'=SUM(F20:F{19+count})')
                 self.assertEqual(sheet.cell(22+count,9).value,'91511700MAACP9B4X9')
                 self.assertEqual(sheet['T14'].value,'2466KTY01')
                 self.assertEqual(sheet['Z20'].value,'N')
                 self.assertEqual(sheet['C12'].value.date(),date(2026,9,17))
                 self.assertEqual(sheet['C12'].number_format,'yyyy-mm-dd')
                 self.assertFalse(sheet._images)
-                self.assertTrue(all(not cell.data_type=='f' for values in sheet for cell in values))
+                self.assertEqual(book.calculation.calcMode, 'auto')
             finally:
                 book.close()
 

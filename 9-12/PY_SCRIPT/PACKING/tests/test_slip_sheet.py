@@ -28,7 +28,7 @@ class SlipSheetTests(unittest.TestCase):
             self.assertEqual(s['F21'].value, 10)
             self.assertEqual(s['AA20'].value, 'cargo')
             self.assertEqual(s['AA21'].value, 'cargo together with slip sheet')
-            self.assertEqual(s['W21'].value, 3620)
+            self.assertEqual(s['W21'].value, '=I21*F21')
             self.assertIsNone(s['E22'].value)
             self.assertIn('180 ctns = 1 slip sheet', s['A22'].value)
             self.assertEqual(s['A22'].fill.fgColor.rgb, '00FFF2CC')

@@ -1,4 +1,4 @@
-"""按范例样式生成装箱单；计算结果直接写数值，Excel 打开前也可读取。"""
+"""按范例样式生成装箱单，体积、重量与合计使用 Excel 公式。"""
 from copy import copy
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
@@ -7,6 +7,8 @@ from openpyxl import load_workbook
 from openpyxl.comments import Comment
 from openpyxl.cell.cell import MergedCell
 from openpyxl.styles import PatternFill, Font, Alignment
+from openpyxl.workbook.properties import CalcProperties
+from openpyxl.utils import get_column_letter
 from services.slip_summary_service import append_slip_summaries
 
 
@@ -67,6 +69,14 @@ def build_packing_excel(template, order, customer, rows):
             if col in (1, 2, 3):
                 cell.number_format = '@'
         sheet.cell(row_index, 3).comment = Comment(f"DATE CODE: {row.date_code}\n资料来源: {row.source}", "Packing System")
+        for col, formula in {
+            17: f'=K{row_index}*M{row_index}*O{row_index}/1000000',
+            19: f'=Q{row_index}*F{row_index}',
+            21: f'=G{row_index}*F{row_index}',
+            23: f'=I{row_index}*F{row_index}',
+        }.items():
+            cell = sheet.cell(row_index, col, formula)
+            cell.number_format = '0.000' if col in (17, 19) else '0.00'
         if row.cargo_label:
             sheet.cell(row_index, 27, row.cargo_label)
             sheet.cell(row_index, 27).alignment = Alignment(wrap_text=True, vertical='center')
@@ -77,7 +87,9 @@ def build_packing_excel(template, order, customer, rows):
     if show_totals:
         copy_row(24, total_row, values=False)
         for col, value in totals.items():
-            sheet.cell(total_row, col, float(value))
+            letter = get_column_letter(col)
+            cell = sheet.cell(total_row, col, f'=SUM({letter}20:{letter}{total_row-1})')
+            cell.number_format = '0.000' if col == 19 else ('0.00' if col in (21,23) else '0')
         for col, value in {20: 'CBM', 22: 'KGS', 24: 'KGS'}.items():
             sheet.cell(total_row, col, value)
     for offset, note in enumerate(slip_notes, 1):
@@ -117,6 +129,7 @@ def build_packing_excel(template, order, customer, rows):
     sheet.page_setup.fitToWidth = 1
     sheet.page_setup.fitToHeight = 0
     sheet._images = []
+    workbook.calculation = CalcProperties(calcMode='auto', fullCalcOnLoad=True, forceFullCalc=True)
     buffer = BytesIO()
     workbook.save(buffer)
     workbook.close()
