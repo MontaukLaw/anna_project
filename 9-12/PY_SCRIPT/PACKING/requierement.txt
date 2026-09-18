@@ -1,2 +1,0 @@
-# Backwards-compatible alias for the original installation command.
--r requirement.txt

@@ -21,6 +21,7 @@ from services.order_matching_service import match_order_pdfs
 from services.pdf_remarks_service import read_remarks_job
 from ui import theme as t
 from ui.components import LogPanel, Section, button, label
+from ui.factory_tab import FactoryTab
 
 
 class PackingApp(ctk.CTk):
@@ -52,14 +53,22 @@ class PackingApp(ctk.CTk):
         self.remarks_generation = 0
         self.remarks_busy = False
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(2, weight=1, uniform="workspace_panels")
-        self.grid_rowconfigure(3, weight=3, uniform="workspace_panels")
+        self.grid_rowconfigure(0, weight=1)
+        self.tabs = ctk.CTkTabview(self, fg_color=t.BG)
+        self.tabs.grid(row=0, column=0, sticky='nsew', padx=8, pady=8)
+        self.workspace = self.tabs.add('自动装箱生成')
+        self.workspace.grid_columnconfigure(0, weight=1)
+        self.workspace.grid_rowconfigure(2, weight=1, uniform='workspace_panels')
+        self.workspace.grid_rowconfigure(3, weight=3, uniform='workspace_panels')
+        factory_parent = self.tabs.add('自动工厂箱单生成')
+        self.factory_tab = FactoryTab(factory_parent)
+        self.factory_tab.pack(fill='both', expand=True)
         self._build_header()
         self._build_source()
         self._build_table()
-        self.logs = LogPanel(self)
+        self.logs = LogPanel(self.workspace)
         self.logs.grid(row=3, column=0, sticky="nsew", padx=28, pady=(0, 12))
-        label(self, "本地工作空间  /  订单 PDF → 装箱单 Excel", size=11, color=t.MUTED).grid(
+        label(self.workspace, "本地工作空间  /  订单 PDF → 装箱单 Excel", size=11, color=t.MUTED).grid(
             row=4, column=0, sticky="w", padx=30, pady=(0, 14))
         self.logs.write("系统已就绪。请选择订单 PDF 目录，加载资料表后直接处理全部订单。")
         self.logs.write(f"装箱单输出目录：{self.excel_output_directory}")
@@ -69,7 +78,7 @@ class PackingApp(ctk.CTk):
         self.after(450, self._restore_last_selections)
 
     def _build_header(self):
-        header = ctk.CTkFrame(self, fg_color="transparent")
+        header = ctk.CTkFrame(self.workspace, fg_color="transparent")
         header.grid(row=0, column=0, sticky="ew", padx=30, pady=(24, 18))
         label(header, APP_NAME, size=27).pack(anchor="w")
         label(header, "PACKING WORKSPACE    /    箱单数据工作台", size=12, color=t.MUTED).pack(anchor="w", pady=(5, 0))
@@ -78,7 +87,7 @@ class PackingApp(ctk.CTk):
         badge.place(relx=1, y=8, anchor="ne")
 
     def _build_source(self):
-        panel = Section(self, "01", "订单目录与资料", "选择 PDF 目录、产品资料、订单排期和输出目录")
+        panel = Section(self.workspace, "01", "订单目录与资料", "选择 PDF 目录、产品资料、订单排期和输出目录")
         panel.grid(row=1, column=0, sticky="ew", padx=28, pady=(0, 16))
         controls = ctk.CTkFrame(panel, fg_color="transparent")
         controls.grid(row=1, column=0, sticky="ew", padx=20, pady=(2, 10))
@@ -122,7 +131,7 @@ class PackingApp(ctk.CTk):
         self.output_directory_button.grid(row=0, column=9)
 
     def _build_table(self):
-        panel = Section(self, "02", "订单 PDF 列表", "包含子目录中的全部 PDF，逐份生成装箱单")
+        panel = Section(self.workspace, "02", "订单 PDF 列表", "包含子目录中的全部 PDF，逐份生成装箱单")
         panel.grid(row=2, column=0, sticky="nsew", padx=28, pady=(0, 16))
         panel.grid_rowconfigure(2, weight=1)
         toolbar = ctk.CTkFrame(panel, fg_color="transparent")

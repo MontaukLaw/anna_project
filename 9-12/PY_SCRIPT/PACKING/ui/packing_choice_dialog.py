@@ -10,7 +10,7 @@ from services.product_weight_service import product_weights
 
 
 class PackingChoiceDialog(ctk.CTkToplevel):
-    def __init__(self, parent, item, candidates, packaging_hint=""):
+    def __init__(self, parent, item, candidates, packaging_hint="", factory=False):
         super().__init__(parent)
         self.title(f"选择装箱资料 — {item.item_no}")
         self.configure(fg_color=t.BG)
@@ -44,6 +44,8 @@ class PackingChoiceDialog(ctk.CTkToplevel):
         for match in packaging_keywords(item.packaging):
             self.pdf_packaging_text.tag_add('packaging_emphasis',
                 f'1.0 + {offset + match.start()} chars', f'1.0 + {offset + match.end()} chars')
+        if factory:
+            self.pdf_packaging_text.tag_add('packaging_emphasis', '1.0', '1.end')
         self.pdf_packaging_text.configure(state="disabled")
         style = ttk.Style(self)
         # The Windows native theme paints an unconfigurable white tree background.
@@ -73,6 +75,8 @@ class PackingChoiceDialog(ctk.CTkToplevel):
         for i, record in enumerate(candidates):
             v = record['values']
             net, gross, weight_source = product_weights(v)
+            if factory:
+                net, gross, weight_source = v.get('整箱净重kg'), v.get('整箱毛重kg'), '整箱'
             recommendation = recommend_candidate(item, record)
             tag = recommendation.level if recommendation.level != 'normal' else ('odd' if i % 2 else 'even')
             self.tree.insert("", "end", iid=str(i), values=(f"{record['sheet']}:{record['row']}", v.get("产品名称"), v.get("装箱数量"),
@@ -91,7 +95,7 @@ class PackingChoiceDialog(ctk.CTkToplevel):
             fg_color=t.INSET, text_color=t.TEXT, border_color=t.BORDER).grid(row=4, column=0, sticky="ew", padx=20)
         actions = ctk.CTkFrame(self, fg_color="transparent")
         actions.grid(row=5, column=0, sticky="e", padx=20, pady=14)
-        button(actions, "跳过此订单", self.destroy).pack(side="left", padx=8)
+        button(actions, "取消本次生成" if factory else "跳过此订单", self.destroy).pack(side="left", padx=8)
         button(actions, "使用所选资料", self.confirm).pack(side="left")
         if len(candidates) == 1:
             self.tree.selection_set("0")

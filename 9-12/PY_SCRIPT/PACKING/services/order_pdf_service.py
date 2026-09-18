@@ -17,7 +17,7 @@ def read_order_number(path: Path) -> str:
     return numbers.pop()
 
 
-def read_order_items(path: Path, order: str) -> tuple[list[OrderItem], str]:
+def read_order_items(path: Path, order: str, *, customer_from_ultimate=False) -> tuple[list[OrderItem], str]:
     reader = PdfReader(path)
     pages = [page.extract_text() or "" for page in reader.pages]
     text = "\n".join(pages)
@@ -55,10 +55,15 @@ def read_order_items(path: Path, order: str) -> tuple[list[OrderItem], str]:
         packaging_forward = re.search(r'(?mi)^\s*Packaging:\s*([^\n]+)', block)
         packaging_text = packaging[1].strip() if packaging else (packaging_forward[1].strip() if packaging_forward else '')
         packing_text = re.sub(r'Packing:\s*$', '', pack[0], flags=re.I).strip()
+        customer_item = re.search(r'(?mi)^\s*([^\n]+?)Customer Item No\.:\s*$', block)
         items.append(OrderItem(start[1], quantity, case_pack, customer[1].strip(), description,
-            cargo[1].strip() if cargo else "", packaging_text, packing_text, shipping_remarks))
+            cargo[1].strip() if cargo else "", packaging_text, packing_text, shipping_remarks,
+            customer_item[1].strip() if customer_item else ''))
     customer_name = re.search(r"CUSTOMER NAME\s*:\s*([^\n]+)", text)
-    if customer_name:
+    if customer_from_ultimate:
+        from services.consignee_service import first_consignee_line
+        name = first_consignee_line(reader.pages)
+    elif customer_name:
         name = customer_name[1].strip()
     elif "Wal-Mart Store Inc." in text:
         name = "Wal-Mart Store Inc."

@@ -14,6 +14,7 @@ class OrderItem:
     packaging: str = ''
     packing: str = ''
     shipping_remarks: str = ''
+    customer_item_no: str = ''
 
 
 @dataclass

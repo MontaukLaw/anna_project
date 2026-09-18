@@ -22,6 +22,16 @@ def read_product_catalog(path: Path) -> ProductCatalog:
             for row_number, row in enumerate(rows[:30]):
                 index = next((i for i, value in enumerate(row)
                               if re.sub(r"[^a-z0-9]", "", str(value).casefold()) in {"itemno", "itemnumber"}), None)
+                # The supplied JP revision has an unnamed item column immediately
+                # before 产品名称. Only accept this known layout with numeric evidence.
+                if index is None and {"产品名称", "装箱数量", "长", "宽", "高"}.issubset(set(row)):
+                    name_index = row.index("产品名称")
+                    if name_index > 0 and row[name_index - 1] is None:
+                        candidate = name_index - 1
+                        samples = [values[candidate] for values in rows[row_number + 1:row_number + 21]
+                                   if len(values) > candidate and values[candidate] is not None]
+                        if samples and all(re.fullmatch(r"\d{5}(?:\.0)?", str(value).strip()) for value in samples):
+                            index = candidate
                 if index is None:
                     continue
                 headers = [str(value).strip() if value is not None else f"列{i+1}" for i, value in enumerate(row)]
