@@ -15,7 +15,7 @@ def output_paths(matches, directory):
     for order in matches:
         if not re.fullmatch(r"POHK-\d+-\d+-\d+", order, re.I):
             raise PackingDataError(f"订单号格式不正确：{order}")
-        paths[order] = directory / f"{order}_装箱单.xlsx"
+        paths[order] = directory / f"{order}_packing_list.xlsx"
     return paths
 
 
@@ -30,13 +30,17 @@ def generate_packing_lists(matches, catalog, schedule, template, directory, choo
                 skipped.append(order)
                 log(f"订单 {order} 的装箱单已存在，已跳过：{paths[order]}", "WARNING")
                 continue
-            if lookup is None:
-                lookup = PackingLookup(catalog, schedule)
             if len(pdfs) != 1:
                 raise PackingDataError(f"匹配到 {len(pdfs)} 个 PDF，需要唯一订单文件")
             log(f"开始读取订单 {order}：{pdfs[0].name}")
             items, customer = read_order_items(pdfs[0], order)
-            log(f"订单 {order}：PDF 共 {len(items)} 个 ITEM，将逐项生成。")
+            if not items:
+                skipped.append(order)
+                log(f"订单 {order} 的 ITEM 数量全部为 0 PCS，已跳过，不生成空装箱单。", "WARNING")
+                continue
+            if lookup is None:
+                lookup = PackingLookup(catalog, schedule)
+            log(f"订单 {order}：共 {len(items)} 个非零数量 ITEM，将逐项生成（0 PCS 已忽略）。")
             rows = []
             for item in items:
                 code = lookup.date_code(order, item.item_no)

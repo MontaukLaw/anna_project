@@ -7,6 +7,16 @@ from models.packing import OrderItem, PackingDataError
 from services.pdf_remarks_service import extract_remarks, filter_packaging_remarks
 
 
+def read_order_number(path: Path) -> str:
+    reader = PdfReader(path)
+    text = "\n".join(page.extract_text() or "" for page in reader.pages)
+    numbers = set(re.findall(r"PURCHASE ORDER NO\.\s*:?\s*(POHK-\d+-\d+-\d+)", text, re.I))
+    numbers = {number.upper() for number in numbers}
+    if len(numbers) != 1:
+        raise PackingDataError(f"PDF 未找到唯一采购订单号：{sorted(numbers)}")
+    return numbers.pop()
+
+
 def read_order_items(path: Path, order: str) -> tuple[list[OrderItem], str]:
     reader = PdfReader(path)
     pages = [page.extract_text() or "" for page in reader.pages]
@@ -23,12 +33,17 @@ def read_order_items(path: Path, order: str) -> tuple[list[OrderItem], str]:
     for index, start in enumerate(starts):
         block = text[start.end():starts[index + 1].start() if index + 1 < len(starts) else len(text)]
         qty = re.search(r"([^\n]+?)\s+([\d,]+(?:\.\d+)?)\s+PCS\b", block)
+        if not qty:
+            raise PackingDataError(f"ITEM {start[1]} 缺少 QTY")
+        quantity = Decimal(qty[2].replace(",", ""))
+        # Cancelled lines need no packing, customer PO, date or product validation.
+        if quantity == 0:
+            continue
         pack = re.search(r"(?m)^\s*([\d,]+(?:\.\d+)?)\s*(?:PCS)?\s*/[^\n]*Packing:", block, re.I)
         customer = re.search(r"(?m)^\s*([^\n]+?)Customer Order No\.:\s*$", block)
         cargo = re.search(r"(?m)^\s*([^\n]+?)Cargo Ready Date:\s*$", block)
         if not qty or not pack or not customer:
             raise PackingDataError(f"ITEM {start[1]} 缺少 QTY / Packing / Customer Order No")
-        quantity = Decimal(qty[2].replace(",", ""))
         case_pack = Decimal(pack[1].replace(",", ""))
         if quantity <= 0 or case_pack <= 0 or quantity % case_pack:
             raise PackingDataError(f"ITEM {start[1]} 数量或装箱量无效，或不能整除：{quantity}/{case_pack}")

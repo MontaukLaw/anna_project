@@ -48,7 +48,7 @@ class PackingTests(unittest.TestCase):
     def test_existing_target_skips_before_pdf_read(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
-            path = root/'POHK-26-12345-001_装箱单.xlsx'
+            path = root/'POHK-26-12345-001_packing_list.xlsx'
             path.write_bytes(b'existing')
             with patch('services.packing_generation_service.read_order_items') as read:
                 generated, failed, skipped = generate_packing_lists({'POHK-26-12345-001':[]},None,None,PACKING_TEMPLATE,root,None,lambda *args:None)
@@ -82,7 +82,7 @@ class LocalPackingIntegrationTests(unittest.TestCase):
             self.assertEqual(failed,[])
             self.assertEqual(len(generated),len(matches))
             self.assertTrue(choices)
-            book=load_workbook(Path(temporary)/'POHK-26-16160-001_装箱单.xlsx',data_only=True)
+            book=load_workbook(Path(temporary)/'POHK-26-16160-001_packing_list.xlsx',data_only=True)
             self.assertEqual(book.active['B20'].value,'0002569483')
             self.assertEqual(book.active['T14'].value,'2366KTY01')
             self.assertEqual(book.active['F20'].value,3420)
@@ -109,7 +109,7 @@ class LocalPackingIntegrationTests(unittest.TestCase):
             return candidates[0],translate_toy_name(candidates[0]['values']['产品名称'])
         with TemporaryDirectory() as temporary:
             root=Path(temporary)
-            existing=root/(orders[0]+'_装箱单.xlsx')
+            existing=root/(orders[0]+'_packing_list.xlsx')
             existing.write_bytes(b'keep existing workbook')
             with patch('services.packing_generation_service.read_order_items',wraps=read_order_items) as read:
                 generated,failed,skipped=generate_packing_lists(matches,self.catalog,self.schedule,PACKING_TEMPLATE,root,choose,lambda *args:None)
@@ -117,7 +117,7 @@ class LocalPackingIntegrationTests(unittest.TestCase):
                 self.assertEqual(read.call_args.args[1],orders[1])
             self.assertEqual(skipped,[orders[0]])
             self.assertEqual(failed,[])
-            self.assertEqual(generated,[root/(orders[1]+'_装箱单.xlsx')])
+            self.assertEqual(generated,[root/(orders[1]+'_packing_list.xlsx')])
             self.assertTrue(generated[0].is_file())
             self.assertEqual(existing.read_bytes(),b'keep existing workbook')
 
@@ -130,9 +130,9 @@ class LocalPackingIntegrationTests(unittest.TestCase):
             root=Path(temporary)
             def opened(path):
                 self.assertTrue(path.is_file())
-                calls.append(path.stem.removesuffix('_装箱单'))
+                calls.append(path.stem.removesuffix('_packing_list'))
                 if len(calls)==1:
-                    self.assertFalse((root/(orders[1]+'_装箱单.xlsx')).exists())
+                    self.assertFalse((root/(orders[1]+'_packing_list.xlsx')).exists())
                     raise OSError('Office unavailable')
             generated,failed,skipped=generate_packing_lists(matches,self.catalog,self.schedule,PACKING_TEMPLATE,root,
                 lambda item,candidates,hint:(candidates[0],item.description),

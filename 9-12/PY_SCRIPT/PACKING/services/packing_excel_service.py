@@ -3,7 +3,10 @@ from copy import copy
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 from io import BytesIO
+import re
 from openpyxl import load_workbook
+from openpyxl.cell.rich_text import CellRichText, TextBlock
+from openpyxl.cell.text import InlineFont
 from openpyxl.comments import Comment
 from openpyxl.cell.cell import MergedCell
 from openpyxl.styles import PatternFill, Font, Alignment
@@ -78,7 +81,14 @@ def build_packing_excel(template, order, customer, rows):
             cell = sheet.cell(row_index, col, formula)
             cell.number_format = '0.000' if col in (17, 19) else '0.00'
         if row.cargo_label:
-            sheet.cell(row_index, 27, row.cargo_label)
+            remark = sheet.cell(row_index, 27)
+            parts = re.split(r'(\bslip\s+sheet\b)', row.cargo_label, flags=re.I)
+            if len(parts) > 1:
+                emphasis = InlineFont(rFont=remark.font.name, sz=remark.font.sz, b=True, color='FFFF0000')
+                remark.value = CellRichText([TextBlock(emphasis, part) if index % 2 else part
+                                            for index, part in enumerate(parts) if part])
+            else:
+                remark.value = row.cargo_label
             sheet.cell(row_index, 27).alignment = Alignment(wrap_text=True, vertical='center')
             sheet.row_dimensions[row_index].height = max(sheet.row_dimensions[row_index].height or 20, 32)
         for col in totals:

@@ -21,13 +21,18 @@ class SlipSheetTests(unittest.TestCase):
         rows = build_slip_rows(item, records, 'CODE', date(2026,9,1), '', None, lambda *args:None)
         self.assertEqual(rows[1].display_quantity, 1800)
         self.assertEqual(rows[1].display_case_pack, 180)
-        book = load_workbook(BytesIO(build_packing_excel(PACKING_TEMPLATE, 'POHK-26-12345-001', 'Customer', rows)))
+        book = load_workbook(BytesIO(build_packing_excel(PACKING_TEMPLATE, 'POHK-26-12345-001', 'Customer', rows)), rich_text=True)
         try:
             s = book.active
             self.assertEqual(s['F20'].value, 1800)
             self.assertEqual(s['F21'].value, 10)
             self.assertEqual(s['AA20'].value, 'cargo')
-            self.assertEqual(s['AA21'].value, 'cargo together with slip sheet')
+            self.assertEqual(str(s['AA21'].value), 'cargo together with slip sheet')
+            self.assertEqual(s['AA21'].value[0], 'cargo together with ')
+            emphasis = s['AA21'].value[1]
+            self.assertEqual(emphasis.text, 'slip sheet')
+            self.assertTrue(emphasis.font.b)
+            self.assertEqual(emphasis.font.color.rgb, 'FFFF0000')
             self.assertEqual(s['W21'].value, '=I21*F21')
             self.assertIsNone(s['E22'].value)
             self.assertIn('180 ctns = 1 slip sheet', s['A22'].value)

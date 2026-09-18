@@ -13,8 +13,6 @@ class PackingChoiceDialog(ctk.CTkToplevel):
     def __init__(self, parent, item, candidates, packaging_hint=""):
         super().__init__(parent)
         self.title(f"选择装箱资料 — {item.item_no}")
-        self.geometry("1180x650")
-        self.minsize(850, 550)
         self.configure(fg_color=t.BG)
         self.result = None
         self.candidates = candidates
@@ -63,7 +61,8 @@ class PackingChoiceDialog(ctk.CTkToplevel):
         frame.grid_columnconfigure(0, weight=1)
         label(frame, "装箱资料   ·   绿色：尺寸与包装均匹配   ·   蓝色：部分条件匹配   ·   请核对后选择", size=12, color=t.MUTED).grid(row=0, column=0, sticky='w', padx=12, pady=10)
         columns = ("row", "name", "pack", "size", "net", "gross", "note", "reason")
-        self.tree = ttk.Treeview(frame, columns=columns, show="headings", selectmode="browse", style="Packing.Treeview")
+        self.tree = ttk.Treeview(frame, columns=columns, show="headings", selectmode="browse", style="Packing.Treeview",
+                                 height=max(3, min(len(candidates), 12)))
         for key, title, width in zip(columns, ("来源行", "产品名称", "装箱数量", "长 × 宽 × 高 (CM)", "净重 KG", "毛重 KG", "备注", "推荐理由"), (75, 125, 85, 160, 80, 80, 190, 270)):
             self.tree.heading(key, text=title)
             self.tree.column(key, width=width, minwidth=20, stretch=False)
@@ -97,7 +96,18 @@ class PackingChoiceDialog(ctk.CTkToplevel):
         if len(candidates) == 1:
             self.tree.selection_set("0")
         self.transient(parent)
+        self.after_idle(self._fit_window)
         self.after(100, self.grab_set)
+
+    def _fit_window(self):
+        """Fit the requested content size, leaving room for desktop window borders."""
+        self.update_idletasks()
+        max_width = max(1, int(self._reverse_window_scaling(self.winfo_screenwidth())) - 60)
+        max_height = max(1, int(self._reverse_window_scaling(self.winfo_screenheight())) - 100)
+        width = min(max_width, max(1180, int(self._reverse_window_scaling(self.winfo_reqwidth()))))
+        height = min(max_height, max(650, int(self._reverse_window_scaling(self.winfo_reqheight()))))
+        self.minsize(min(850, max_width), min(550, max_height))
+        self.geometry(f"{width}x{height}")
 
     def _fit_columns(self, event):
         # Keep every column inside the available viewport, including on resize.
@@ -114,6 +124,7 @@ class PackingChoiceDialog(ctk.CTkToplevel):
         if selected:
             values = self.tree.item(selected[0], 'values')
             self.row_detail.configure(text=f"备注：{values[6]}　｜　推荐理由：{values[7]}")
+            self.after_idle(self._fit_window)
 
     def confirm(self):
         selected = self.tree.selection()
