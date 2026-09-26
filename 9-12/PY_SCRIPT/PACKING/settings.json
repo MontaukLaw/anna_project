@@ -1,10 +1,8 @@
 {
-  "jp_product_file": "C:\\ai\\anna_project\\9-12\\PY_SCRIPT\\PACKING\\JP产品净重毛重外箱尺寸表20241209.xlsx",
+  "jp_product_file": "D:\\AI\\anna_project\\9-12\\PY_SCRIPT\\PACKING\\JP产品净重毛重外箱尺寸表20241209.xlsx",
   "jp_product_confirmed": true,
-  "order_schedule_file": "C:\\ai\\anna_project\\9-12\\PY_SCRIPT\\PACKING\\2026年 可图雅JP订单分类排期汇总（9-12更新).xlsx",
+  "order_schedule_file": "D:\\AI\\anna_project\\9-12\\PY_SCRIPT\\PACKING\\2026年 可图雅JP订单分类排期汇总（9-12更新).xlsx",
   "order_schedule_confirmed": true,
-  "selected_image_file": "C:\\Users\\asus\\Desktop\\新建文件夹\\LaiPing\\480bdaf5-56ac-41e5-9970-3078e7b8df37.png",
-  "selected_image_confirmed": true,
   "order_pdf_directory_file": "C:\\Users\\asus\\Desktop\\新建文件夹\\Marc",
   "order_pdf_directory_confirmed": true,
   "output_directory_file": "C:\\Users\\asus\\Desktop\\新建文件夹\\Marc",
@@ -18,5 +16,11 @@
   "factory_output_file": "C:\\ai\\anna_project\\9-12\\PY_SCRIPT\\PACKING\\工厂箱单\\out",
   "factory_output_confirmed": true,
   "factory_product_file": "C:\\ai\\anna_project\\9-12\\PY_SCRIPT\\PACKING\\JP产品净重毛重外箱尺寸表20241209.xlsx",
-  "factory_product_confirmed": true
+  "factory_product_confirmed": true,
+  "ui_font_size": 16,
+  "asn_directory_file": "D:\\AI\\anna_project_old\\092601",
+  "asn_directory_confirmed": true,
+  "asn_customs_file": "D:\\AI\\anna_project_old\\092601\\PL-28483 1800件-10个卡板.xlsx",
+  "asn_customs_confirmed": true,
+  "asn_output_directory": "D:\\AI\\anna_project_data_0926\\output"
 }

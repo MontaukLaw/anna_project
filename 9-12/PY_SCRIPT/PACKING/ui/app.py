@@ -4,57 +4,54 @@ from threading import Thread
 from tkinter import filedialog, messagebox
 import customtkinter as ctk
 
-from config import APP_NAME, IMAGE_FILE_TYPES, WORKSPACE_DIR, SETTINGS_FILE, DEFAULT_JP_FILE, PROJECT_DIR
-from services.settings_service import read_settings, get_product_path, find_local_product_files
+from config import APP_NAME, WORKSPACE_DIR, SETTINGS_FILE, DEFAULT_JP_FILE, PROJECT_DIR, PACKING_RULES_FILE, RESOURCE_DIR
+from services.settings_service import read_settings, get_product_path, find_local_product_files, ensure_settings
 from services.product_catalog_service import load_product_catalog_job
 from services.settings_service import find_local_schedule_files, get_saved_path, save_file_path
 from services.schedule_service import load_order_schedule_job
 from config import PACKING_OUTPUT_DIR, PACKING_TEMPLATE
 from services.packing_job import run_packing_job
-from services.packing_generation_service import output_paths
 from ui.packing_choice_dialog import PackingChoiceDialog
-from models.table import TableData
-from services.excel_service import write_table
-from services.text_table import format_table
 from services.order_directory_service import scan_order_directory
-from services.order_matching_service import match_order_pdfs
-from services.pdf_remarks_service import read_remarks_job
 from ui import theme as t
 from ui.components import LogPanel, Section, button, label
 from ui.factory_tab import FactoryTab
+from ui.asn_tab import AsnTab
+from ui.font_controls import FontControls
 
 
 class PackingApp(ctk.CTk):
     def __init__(self):
         ctk.set_appearance_mode("dark")
         super().__init__()
-        self.title(APP_NAME)
+        settings_error = None
+        try:
+            ensure_settings(SETTINGS_FILE, {'ui_font_size': t.DEFAULT_FONT_SIZE})
+            ensure_settings(PACKING_RULES_FILE, read_settings(RESOURCE_DIR / 'packing_rules.json') or {'dimension_tolerance_percent': 4})
+            t.set_font_size(read_settings(SETTINGS_FILE).get('ui_font_size', t.DEFAULT_FONT_SIZE))
+        except (OSError, ValueError) as exc:
+            t.set_font_size(t.DEFAULT_FONT_SIZE)
+            settings_error = str(exc)
+        self.title("LOVE ANNA, 加油!")
         self.geometry("1180x880")
         self.minsize(960, 760)
         self.configure(fg_color=t.BG)
-        self.selected_image: Path | None = None
         self.order_search_directory: Path | None = None
         self.order_pdf_files: list[Path] = []
         self.directory_scan_busy = False
         self.directory_scan_ready = False
         self.directory_scan_warnings = 0
-        self.order_pdf_matches: dict[str, list[Path]] = {}
-        self.table: TableData | None = None
         self.excel_output_directory = PACKING_OUTPUT_DIR
-        self.busy = False
         self.events = Queue()
-        self.ocr_service = None
-        self.output_path: Path | None = None
         self.product_catalog = None
         self.product_loading = False
         self.order_schedule = None
         self.schedule_loading = False
         self.packing_busy = False
-        self.remarks_generation = 0
-        self.remarks_busy = False
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(0, weight=1)
         self.tabs = ctk.CTkTabview(self, fg_color=t.BG)
+        self.tabs._segmented_button.configure(font=t.font(13))
         self.tabs.grid(row=0, column=0, sticky='nsew', padx=8, pady=8)
         self.workspace = self.tabs.add('自动装箱生成')
         self.workspace.grid_columnconfigure(0, weight=1)
@@ -63,6 +60,14 @@ class PackingApp(ctk.CTk):
         factory_parent = self.tabs.add('自动工厂箱单生成')
         self.factory_tab = FactoryTab(factory_parent)
         self.factory_tab.pack(fill='both', expand=True)
+        asn_parent = self.tabs.add('入仓预申报ASN生成器')
+        self.asn_tab = AsnTab(asn_parent)
+        self.asn_tab.pack(fill='both', expand=True)
+        self.tabs.set('入仓预申报ASN生成器')
+        self.font_controls = FontControls(self, SETTINGS_FILE, self.asn_tab.logs.write)
+        self.font_controls.grid(row=1, column=0, sticky='e', padx=18, pady=(0, 10))
+        if settings_error:
+            self.asn_tab.logs.write(f'字号配置读取失败，已使用默认字号：{settings_error}', 'WARNING')
         self._build_header()
         self._build_source()
         self._build_table()
@@ -73,9 +78,17 @@ class PackingApp(ctk.CTk):
         self.logs.write("系统已就绪。请选择订单 PDF 目录，加载资料表后直接处理全部订单。")
         self.logs.write(f"装箱单输出目录：{self.excel_output_directory}")
         self.after(100, self._poll_events)
-        self.after(250, self._restore_product_catalog)
-        self.after(350, self._restore_order_schedule)
-        self.after(450, self._restore_last_selections)
+        # Restore PDF-only resources when that page is first opened, so an
+        # unrelated product file picker cannot interrupt the new ASN home page.
+        self._packing_restored = False
+        self.tabs.configure(command=self._on_tab_change)
+
+    def _on_tab_change(self):
+        if self.tabs.get() == '自动装箱生成' and not self._packing_restored:
+            self._packing_restored = True
+            self._restore_product_catalog()
+            self._restore_order_schedule()
+            self._restore_last_selections()
 
     def _build_header(self):
         header = ctk.CTkFrame(self.workspace, fg_color="transparent")
@@ -93,17 +106,11 @@ class PackingApp(ctk.CTk):
         controls.grid(row=1, column=0, sticky="ew", padx=20, pady=(2, 10))
         for column in (2, 4, 6, 8):
             controls.grid_columnconfigure(column, weight=1, uniform="source_paths")
-        self.file_path = ctk.StringVar(value="尚未选择图片")
-        self.path_entry = ctk.CTkEntry(controls, textvariable=self.file_path, state="readonly",
-                                      height=38, fg_color=t.INSET, border_color=t.BORDER,
-                                      text_color=t.MUTED, font=(t.FONT, 12))
-        # Keep the image controls available for later restoration, but hidden.
-        self.browse_button = button(controls, "选择图片", self.browse_image, width=88)
         self.order_directory_path = ctk.StringVar(value="尚未选择订单搜索目录")
         self.order_directory_entry = ctk.CTkEntry(
             controls, textvariable=self.order_directory_path, state="readonly",
             height=38, fg_color=t.INSET, border_color=t.BORDER,
-            text_color=t.MUTED, font=(t.FONT, 12))
+            text_color=t.MUTED, font=t.font(12))
         self.order_directory_entry.grid(row=0, column=2, sticky="ew", padx=(0, 8))
         self.order_directory_button = button(
             controls, "搜索订单目录", self.browse_order_directory, width=110)
@@ -111,21 +118,21 @@ class PackingApp(ctk.CTk):
         self.product_path = ctk.StringVar(value="JP 产品资料表：尚未选择")
         self.product_entry = ctk.CTkEntry(
             controls, textvariable=self.product_path, state="readonly", height=38,
-            fg_color=t.INSET, border_color=t.BORDER, text_color=t.MUTED, font=(t.FONT, 12))
+            fg_color=t.INSET, border_color=t.BORDER, text_color=t.MUTED, font=t.font(12))
         self.product_entry.grid(row=0, column=4, sticky="ew", padx=(0, 8))
         self.product_button = button(controls, "选择 JP 产品资料表", self.browse_product_catalog, width=144)
         self.product_button.grid(row=0, column=5, padx=(0, 12))
         self.schedule_path = ctk.StringVar(value="订单排期表：尚未选择")
         self.schedule_entry = ctk.CTkEntry(
             controls, textvariable=self.schedule_path, state="readonly", height=38,
-            fg_color=t.INSET, border_color=t.BORDER, text_color=t.MUTED, font=(t.FONT, 12))
+            fg_color=t.INSET, border_color=t.BORDER, text_color=t.MUTED, font=t.font(12))
         self.schedule_entry.grid(row=0, column=6, sticky="ew", padx=(0, 8))
         self.schedule_button = button(controls, "选择订单排期表", self.browse_order_schedule, width=120)
         self.schedule_button.grid(row=0, column=7, padx=(0, 12))
         self.output_directory_path = ctk.StringVar(value=str(self.excel_output_directory))
         self.output_directory_entry = ctk.CTkEntry(
             controls, textvariable=self.output_directory_path, state="readonly", height=38,
-            fg_color=t.INSET, border_color=t.BORDER, text_color=t.MUTED, font=(t.FONT, 12))
+            fg_color=t.INSET, border_color=t.BORDER, text_color=t.MUTED, font=t.font(12))
         self.output_directory_entry.grid(row=0, column=8, sticky="ew", padx=(0, 8))
         self.output_directory_button = button(controls, "输出目录", self.browse_output_directory, width=88)
         self.output_directory_button.grid(row=0, column=9)
@@ -136,15 +143,12 @@ class PackingApp(ctk.CTk):
         panel.grid_rowconfigure(2, weight=1)
         toolbar = ctk.CTkFrame(panel, fg_color="transparent")
         toolbar.grid(row=1, column=0, sticky="ew", padx=20, pady=(0, 10))
-        self.recognize_button = button(toolbar, "重新识别", self.start_recognition, state="disabled", width=130)
-        self.export_button = button(toolbar, "另存为 Excel", self.export_excel, state="disabled", width=130)
-        self.packing_button = button(toolbar, "生成装箱单", self.generate_packing, width=125)
         self.all_pdf_button = button(toolbar, "直接处理所有pdf订单", self.generate_all_pdf_packing, width=180)
         self.all_pdf_button.pack(side="left", padx=(0, 10))
         self.table_info = label(toolbar, "0 个 PDF", size=12, color=t.MUTED)
         self.table_info.pack(side="right")
         self.table_text = ctk.CTkTextbox(panel, fg_color=t.INSET, text_color=t.TEXT,
-                                        font=(t.FONT, 14), wrap="none", height=60)
+                                        font=t.font(14), wrap="none", height=60)
         self.table_text.grid(row=2, column=0, sticky="nsew", padx=20, pady=(0, 16))
         self._set_table_text("请选择订单 PDF 目录。\n\n扫描后在此列出全部 PDF；加载产品资料表和订单排期表后，点击“直接处理所有pdf订单”。")
 
@@ -184,7 +188,7 @@ class PackingApp(ctk.CTk):
             self._start_directory_scan()
 
     def browse_output_directory(self):
-        if self.busy or self.packing_busy:
+        if self.packing_busy:
             self.logs.write("正在处理文件，请完成后再更改输出目录。", "WARNING")
             return
         directory = filedialog.askdirectory(parent=self, title="选择 Excel 输出目录",
@@ -203,40 +207,25 @@ class PackingApp(ctk.CTk):
         self.logs.write(f"装箱单输出目录已设置：{path}")
 
     def generate_all_pdf_packing(self):
-        self.generate_packing(all_pdfs=True)
-
-    def generate_packing(self, all_pdfs=False):
         if self.packing_busy:
             return
-        if self.busy or self.directory_scan_busy or self.product_loading or self.schedule_loading or self.remarks_busy:
+        if self.directory_scan_busy or self.product_loading or self.schedule_loading:
             self.logs.write("请等待目录搜索和资料表读取完成。", "WARNING")
             return
-        if all_pdfs and (self.order_search_directory is None or self.product_catalog is None or self.order_schedule is None):
+        if self.order_search_directory is None or self.product_catalog is None or self.order_schedule is None:
             self.logs.write("请先选择订单 PDF 目录，并加载 JP 产品资料表和订单排期表。", "WARNING")
             return
-        if not all_pdfs and (self.table is None or not self.order_pdf_matches or self.product_catalog is None or self.order_schedule is None):
-            self.logs.write("请先识别图片、选择订单 PDF 目录，并加载 JP 产品资料表和订单排期表。", "WARNING")
-            return
-        try:
-            paths = output_paths({} if all_pdfs else self.order_pdf_matches, self.excel_output_directory)
-        except ValueError as exc:
-            self.logs.write(f"订单号错误：{exc}", "ERROR")
-            return
         self.packing_busy = True
-        for control in (self.packing_button, self.all_pdf_button, self.browse_button, self.order_directory_button,
-                        self.product_button, self.schedule_button, self.recognize_button):
+        for control in (self.all_pdf_button, self.order_directory_button,
+                        self.product_button, self.schedule_button):
             control.configure(state="disabled")
-        self.packing_button.configure(text="正在生成…")
         self.all_pdf_button.configure(text="正在处理 PDF…")
-        if all_pdfs:
-            self.logs.write(f"正在扫描全部订单 PDF：{self.order_search_directory}")
-            self._set_table_text("正在扫描订单 PDF 目录（包含子目录）…")
-            self.table_info.configure(text="扫描 PDF 中…")
-        else:
-            self.logs.write(f"开始生成装箱单，共 {len(paths)} 个订单。输出目录：{self.excel_output_directory}")
-        Thread(target=run_packing_job, args=(dict(self.order_pdf_matches), self.product_catalog,
+        self.logs.write(f"正在扫描全部订单 PDF：{self.order_search_directory}")
+        self._set_table_text("正在扫描订单 PDF 目录（包含子目录）…")
+        self.table_info.configure(text="扫描 PDF 中…")
+        Thread(target=run_packing_job, args=({}, self.product_catalog,
                self.order_schedule, PACKING_TEMPLATE, self.excel_output_directory, self.events),
-               kwargs={"pdf_directory": self.order_search_directory if all_pdfs else None}, daemon=True).start()
+               kwargs={"pdf_directory": self.order_search_directory}, daemon=True).start()
 
     def _set_table_text(self, text: str):
         self.table_text.configure(state="normal")
@@ -349,14 +338,6 @@ class PackingApp(ctk.CTk):
         Thread(target=load_order_schedule_job,
                args=(path, SETTINGS_FILE, True, self.events), daemon=True).start()
 
-    def browse_image(self):
-        filename = filedialog.askopenfilename(parent=self, title="选择箱单明细图片",
-                                              initialdir=self.selected_image.parent if self.selected_image else WORKSPACE_DIR,
-                                              filetypes=IMAGE_FILE_TYPES)
-        if filename:
-            self.select_image(Path(filename))
-        else:
-            self.logs.write("已取消选择图片。")
 
     def browse_order_directory(self):
         if self.directory_scan_busy:
@@ -381,13 +362,6 @@ class PackingApp(ctk.CTk):
         if self.directory_scan_busy or self.order_search_directory is None:
             return
         self.order_pdf_files = []
-        self.remarks_generation += 1
-        self.remarks_busy = False
-        if self.table is not None and 'REMARKS' in self.table.columns:
-            index = self.table.columns.index('REMARKS')
-            self.table = TableData(self.table.columns[:index], [row[:index] for row in self.table.rows])
-            self._set_table_text(format_table(self.table))
-        self.order_pdf_matches = {}
         self.directory_scan_ready = False
         self.directory_scan_warnings = 0
         self.directory_scan_busy = True
@@ -397,102 +371,12 @@ class PackingApp(ctk.CTk):
         self.table_info.configure(text="扫描 PDF 中…")
         Thread(target=scan_order_directory, args=(self.order_search_directory, self.events), daemon=True).start()
 
-    def _match_order_pdfs(self):
-        if self.table is None or not self.directory_scan_ready or self.directory_scan_busy:
-            return
-        self.order_pdf_matches = {}
-        try:
-            result = match_order_pdfs(self.table, self.order_pdf_files)
-        except ValueError as exc:
-            self.logs.write(str(exc), "WARNING")
-            return
-        self.order_pdf_matches = result.files_by_order
-        self.logs.write(f"开始匹配订单 PDF | 订单列：{result.column} | 目录：{self.order_search_directory}")
-        if result.blank_rows:
-            self.logs.write(f"{result.blank_rows} 行订单号为空，已跳过。", "WARNING")
-        if not self.order_pdf_matches:
-            self.logs.write("订单号列没有有效订单号，未执行匹配。", "WARNING")
-            return
-        unique_files = set()
-        matched_orders = 0
-        for order, files in self.order_pdf_matches.items():
-            if files:
-                matched_orders += 1
-                unique_files.update(files)
-                self.logs.write(f"订单 {order}：找到 {len(files)} 个 PDF。")
-                for path in files:
-                    self.logs.write(f"  匹配文件：{path.relative_to(self.order_search_directory)}")
-            else:
-                self.logs.write(f"订单 {order}：找到 0 个 PDF，未匹配到文件。", "WARNING")
-        total = len(self.order_pdf_matches)
-        self.logs.write(f"订单 PDF 匹配完成：共 {total} 个不同订单号，{matched_orders} 个已匹配，"
-                        f"{total - matched_orders} 个未匹配；共找到 {len(unique_files)} 个不同 PDF 文件。")
-        if self.directory_scan_warnings:
-            self.logs.write("部分目录无法读取，以上匹配结果可能不完整。", "WARNING")
-        self.remarks_generation += 1
-        self.remarks_busy = True
-        self.logs.write("开始读取所有匹配订单 PDF 的 REMARKS…")
-        Thread(target=read_remarks_job, args=(self.table, result.column, dict(self.order_pdf_matches),
-               self.remarks_generation, self.events), daemon=True).start()
-
-    def select_image(self, path: Path) -> bool:
-        if self.busy:
-            return False
-        if not path.is_file():
-            self.logs.write(f"图片不存在或无法访问：{path}", "ERROR")
-            return False
-        self.selected_image = path
-        self.file_path.set(str(path))
-        self._remember_selection('selected_image', path)
-        self.table = None
-        self.export_button.configure(state="disabled")
-        self.table_info.configure(text="0 行 / 0 列")
-        self.logs.write(f"已选择图片，开始读取识别：{path.name}")
-        self.start_recognition()
-        return True
-
-    def start_recognition(self):
-        if self.busy or self.selected_image is None:
-            return
-        from services.recognition_job import run_recognition
-        if self.ocr_service is None:
-            from services.ocr_service import TableRecognitionService
-            self.ocr_service = TableRecognitionService()
-        self.busy = True
-        self.remarks_generation += 1
-        self.remarks_busy = False
-        self.table = None
-        self.order_pdf_matches = {}
-        self.output_path = None
-        self.browse_button.configure(state="disabled")
-        self.recognize_button.configure(state="disabled", text="正在识别…")
-        self.export_button.configure(state="disabled")
-        self.table_info.configure(text="识别中…")
-        self._set_table_text(f"正在识别：{self.selected_image.name}\n\n正在加载本地模型并识别表格，请稍候…\n完成后会自动显示结果并生成 Excel。")
-        self.logs.write("开始自动识别表格…")
-        Thread(target=run_recognition,
-               args=(self.ocr_service, self.selected_image, self.excel_output_directory, self.events), daemon=True).start()
-
     def _poll_events(self):
         try:
             # Limit work per tick so large directories do not stall the GUI.
             for _ in range(100):
                 event, payload = self.events.get_nowait()
-                if event == "remarks_log":
-                    generation, message, level = payload
-                    if generation == self.remarks_generation:
-                        self.logs.write(message, level)
-                elif event == "remarks_ready":
-                    generation, table = payload
-                    if generation == self.remarks_generation:
-                        self.table = table
-                        self._set_table_text(format_table(table))
-                        self.table_info.configure(text=f"{len(table.rows)} 行 / {len(table.columns)} 列 · REMARKS 已读取")
-                        self.logs.write("包装备注已显示在 REMARKS 列。" if 'REMARKS' in table.columns else "没有匹配的包装备注，已隐藏 REMARKS 列。")
-                elif event == "remarks_done":
-                    if payload == self.remarks_generation:
-                        self.remarks_busy = False
-                elif event == "packing_pdf_files":
+                if event == "packing_pdf_files":
                     self._display_pdf_files(payload)
                 elif event == "packing_log":
                     self.logs.write(*payload)
@@ -512,10 +396,9 @@ class PackingApp(ctk.CTk):
                     self.logs.write(f"装箱单生成已停止：{payload}", "ERROR")
                 elif event == "packing_done":
                     self.packing_busy = False
-                    for control in (self.packing_button, self.all_pdf_button, self.browse_button, self.order_directory_button,
-                                    self.product_button, self.schedule_button, self.recognize_button):
+                    for control in (self.all_pdf_button, self.order_directory_button,
+                                    self.product_button, self.schedule_button):
                         control.configure(state="normal")
-                    self.packing_button.configure(text="生成装箱单")
                     self.all_pdf_button.configure(text="直接处理所有pdf订单")
                 elif event == "schedule_loaded":
                     self.order_schedule = payload
@@ -567,55 +450,6 @@ class PackingApp(ctk.CTk):
                     self.order_directory_button.configure(state="normal", text="搜索订单目录")
                     if self.directory_scan_ready:
                         self._display_pdf_files(self.order_pdf_files)
-                elif event == "table":
-                    self.display_table(payload)
-                    self.export_button.configure(state="disabled")
-                elif event == "saved":
-                    self.output_path = payload
-                    self.logs.write(f"Excel 已自动生成：{payload}")
-                    self.table_info.configure(text=f"{len(self.table.rows)} 行 / {len(self.table.columns)} 列 · Excel 已保存")
-                elif event == "save_error":
-                    self.logs.write(f"识别完成，但 Excel 保存失败：{payload}。可点击“另存为 Excel”重试。", "ERROR")
-                    self.table_info.configure(text="识别完成 · 保存失败，可另存为")
-                elif event == "error":
-                    self.logs.write(f"识别失败：{payload}", "ERROR")
-                    self._set_table_text(f"识别失败\n\n{payload}\n\n可重新选择图片或点击“重新识别”。")
-                    self.table_info.configure(text="识别失败")
-                elif event == "done":
-                    self.busy = False
-                    self.browse_button.configure(state="normal")
-                    self.recognize_button.configure(state="normal", text="重新识别")
-                    self.export_button.configure(state="normal" if self.table is not None else "disabled")
         except Empty:
             pass
         self.after(100, self._poll_events)
-
-    def display_table(self, table: TableData):
-        """在主线程显示后台 OCR 生成的表格。"""
-        rendered = format_table(table)
-        self.table = table
-        self._set_table_text(rendered)
-        self.table_info.configure(text=f"{len(table.rows)} 行 / {len(table.columns)} 列")
-        self.export_button.configure(state="normal")
-        self.logs.write(f"表格已更新：{len(table.rows)} 行，{len(table.columns)} 列。")
-        if self.order_search_directory is None:
-            self.logs.write("请选择订单 PDF 目录，选择后会自动按订单号匹配文件。")
-        elif not self.directory_scan_busy:
-            # Refresh the directory so newly added PDFs are included for each image.
-            self._start_directory_scan()
-
-    def export_excel(self):
-        if self.table is None:
-            return
-        filename = filedialog.asksaveasfilename(parent=self, title="保存箱单明细",
-                                               initialdir=self.excel_output_directory if self.excel_output_directory.exists() else PROJECT_DIR,
-                                               initialfile=f"{self.selected_image.stem if self.selected_image else '箱单明细'}.xlsx",
-                                               defaultextension=".xlsx", filetypes=[("Excel 工作簿", "*.xlsx")])
-        if not filename:
-            return
-        try:
-            destination = write_table(self.table, Path(filename))
-        except Exception as exc:
-            self.logs.write(f"Excel 导出失败：{exc}", "ERROR")
-        else:
-            self.logs.write(f"Excel 已保存：{destination}")

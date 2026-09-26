@@ -25,21 +25,22 @@ class PackingChoiceDialog(ctk.CTkToplevel):
         label(hint_panel, "订单排期表 · 包装要求", size=14, color=t.ACCENT).grid(row=0, column=0, sticky="w", padx=12, pady=(8, 4))
         label(hint_panel, "订单 PDF · 包装信息", size=14, color=t.ACCENT).grid(row=0, column=1, sticky="w", padx=12, pady=(8, 4))
         self.packaging_text = ctk.CTkTextbox(hint_panel, height=145, wrap="word",
-            fg_color=t.INSET, text_color=t.TEXT, font=(t.FONT, 14))
+            fg_color=t.INSET, text_color=t.TEXT, font=t.font(14))
         self.packaging_text.grid(row=1, column=0, sticky="ew", padx=(12, 6), pady=(0, 10))
         self.packaging_text.insert("1.0", packaging_hint or "未提供包装要求，请核对订单排期表。")
         self.packaging_text.configure(state="disabled")
         self.pdf_packaging_text = ctk.CTkTextbox(hint_panel, height=145, wrap="word",
-            fg_color=t.INSET, text_color=t.TEXT, font=(t.FONT, 14))
+            fg_color=t.INSET, text_color=t.TEXT, font=t.font(14))
         self.pdf_packaging_text.grid(row=1, column=1, sticky="ew", padx=(6, 12), pady=(0, 10))
         pdf_hint = f"Packaging：{item.packaging or '未读取到'}\n\nPacking：{packing_with_cm(item.packing) if item.packing else '未读取到'}"
         if item.shipping_remarks:
             pdf_hint += f"\n\nREMARKS：\n{item.shipping_remarks}"
         self.pdf_packaging_text.insert("1.0", pdf_hint)
-        self.packaging_emphasis_font = ctk.CTkFont(family=t.FONT, size=18, weight="bold")
+        self.packaging_emphasis_font = t.font(18, 'bold')
         # CTkTextbox's public tag API excludes fonts; use the underlying Tk text tag.
         self.pdf_packaging_text._textbox.tag_configure('packaging_emphasis', foreground='#FF4545',
             font=self.pdf_packaging_text._apply_font_scaling(self.packaging_emphasis_font))
+        self.packaging_emphasis_font.add_size_configure_callback(self._refresh_emphasis)
         offset = len('Packaging：')
         for match in packaging_keywords(item.packaging):
             self.pdf_packaging_text.tag_add('packaging_emphasis',
@@ -48,13 +49,16 @@ class PackingChoiceDialog(ctk.CTkToplevel):
             self.pdf_packaging_text.tag_add('packaging_emphasis', '1.0', '1.end')
         self.pdf_packaging_text.configure(state="disabled")
         style = ttk.Style(self)
+        self.tree_font = t.font(13)
+        self.tree_heading_font = t.font(13, 'bold')
         # The Windows native theme paints an unconfigurable white tree background.
         style.theme_use('clam')
         style.configure("Packing.Treeview", background=t.INSET, foreground=t.TEXT, fieldbackground=t.INSET,
             bordercolor=t.INSET, lightcolor=t.INSET, darkcolor=t.INSET,
-            borderwidth=0, relief='flat', rowheight=40, font=(t.FONT, 13))
+            borderwidth=0, relief='flat', rowheight=max(40, self.tree_font.metrics('linespace') + 16), font=self.tree_font)
         style.configure('Packing.Treeview.Heading', background='#293548', foreground=t.TEXT,
-            relief='flat', borderwidth=0, padding=(3, 9), font=(t.FONT, 13, 'bold'))
+            relief='flat', borderwidth=0, padding=(3, 9), font=self.tree_heading_font)
+        self.tree_font.add_size_configure_callback(self._refresh_tree_font)
         style.map('Packing.Treeview', background=[('selected','#385879')], foreground=[('selected','#FFFFFF')])
         style.map('Packing.Treeview.Heading', background=[('active','#34465E')])
         frame = ctk.CTkFrame(self, fg_color=t.INSET, corner_radius=8, border_width=1, border_color=t.BORDER)
@@ -92,7 +96,7 @@ class PackingChoiceDialog(ctk.CTkToplevel):
         self.english = ctk.StringVar(value=item.description)
         label(self, "玩具种类 · PDF DESCRIPTION 第一行", color=t.MUTED).grid(row=3, column=0, sticky="w", padx=20, pady=(12, 2))
         ctk.CTkEntry(self, textvariable=self.english, height=36, state="readonly",
-            fg_color=t.INSET, text_color=t.TEXT, border_color=t.BORDER).grid(row=4, column=0, sticky="ew", padx=20)
+            fg_color=t.INSET, text_color=t.TEXT, border_color=t.BORDER, font=t.font(13)).grid(row=4, column=0, sticky="ew", padx=20)
         actions = ctk.CTkFrame(self, fg_color="transparent")
         actions.grid(row=5, column=0, sticky="e", padx=20, pady=14)
         button(actions, "取消本次生成" if factory else "跳过此订单", self.destroy).pack(side="left", padx=8)
@@ -102,6 +106,18 @@ class PackingChoiceDialog(ctk.CTkToplevel):
         self.transient(parent)
         self.after_idle(self._fit_window)
         self.after(100, self.grab_set)
+
+    def _refresh_emphasis(self):
+        self.pdf_packaging_text._textbox.tag_configure('packaging_emphasis',
+            font=self.pdf_packaging_text._apply_font_scaling(self.packaging_emphasis_font))
+
+    def _refresh_tree_font(self):
+        ttk.Style(self).configure('Packing.Treeview', rowheight=max(40, self.tree_font.metrics('linespace') + 16))
+
+    def destroy(self):
+        self.packaging_emphasis_font.remove_size_configure_callback(self._refresh_emphasis)
+        self.tree_font.remove_size_configure_callback(self._refresh_tree_font)
+        super().destroy()
 
     def _fit_window(self):
         """Fit the requested content size, leaving room for desktop window borders."""

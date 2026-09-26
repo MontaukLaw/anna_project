@@ -3,7 +3,7 @@ from pypdf import PdfReader
 
 
 def read_pdf_text(path: Path) -> list[str]:
-    """返回各页文本。扫描版 PDF 需后续接入 OCR，本函数不执行识别。"""
+    """返回文字型 PDF 的各页文本；不支持读取扫描版 PDF。"""
     with path.open("rb") as stream:
         reader = PdfReader(stream)
         return [page.extract_text() or "" for page in reader.pages]

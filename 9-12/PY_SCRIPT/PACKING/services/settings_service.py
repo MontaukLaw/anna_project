@@ -8,6 +8,13 @@ from fnmatch import fnmatch
 _settings_lock = Lock()
 
 
+def ensure_settings(path: Path, defaults: dict) -> None:
+    """Create an external configuration on first launch; preserve existing preferences."""
+    with _settings_lock:
+        if not path.exists():
+            _save_settings(path, defaults)
+
+
 def read_settings(path: Path) -> dict:
     if not path.exists():
         return {}
@@ -54,11 +61,21 @@ def save_file_path(config_path: Path, selected_path: Path, prefix: str) -> None:
 
 
 def _save_file_path(config_path: Path, selected_path: Path, prefix: str) -> None:
+    _save_settings(config_path, {f"{prefix}_file": str(selected_path.resolve()), f"{prefix}_confirmed": True})
+
+
+def save_settings(config_path: Path, values: dict) -> None:
+    """Merge preferences under the same lock used by background file loaders."""
+    with _settings_lock:
+        _save_settings(config_path, values)
+
+
+def _save_settings(config_path: Path, values: dict) -> None:
     try:
         settings = read_settings(config_path)
     except (ValueError, OSError):
         settings = {}
-    settings.update({f"{prefix}_file": str(selected_path.resolve()), f"{prefix}_confirmed": True})
+    settings.update(values)
     config_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
     try:

@@ -6,7 +6,7 @@ from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
-from config import PROJECT_DIR, SETTINGS_FILE
+from config import PROJECT_DIR, SETTINGS_FILE, FACTORY_TEMPLATE
 from services.factory_excel_service import write_factory_workbook
 from services.factory_packing_service import collect_factory_rows, scan_pdfs
 from services.office_service import open_in_excel
@@ -37,7 +37,7 @@ class FactoryOptionDialog(ctk.CTkToplevel):
             option = ctk.CTkFrame(frame, fg_color=t.INSET)
             option.grid(row=index, column=0, sticky='ew', pady=6)
             ctk.CTkRadioButton(option, text=f'选择第 {index + 1} 项', variable=self.selection,
-                               value=index).pack(anchor='w', padx=12, pady=8)
+                               value=index, font=t.font(13)).pack(anchor='w', padx=12, pady=8)
             label(option, text, wraplength=720, justify='left').pack(anchor='w', padx=12, pady=(0, 10))
         actions = ctk.CTkFrame(self, fg_color='transparent')
         actions.grid(row=2, column=0, pady=16)
@@ -81,7 +81,7 @@ class FactoryTab(ctk.CTkFrame):
             value = ctk.StringVar(value='尚未选择')
             self.path_vars[key] = value
             ctk.CTkEntry(sources, textvariable=value, state='readonly', height=36,
-                        fg_color=t.INSET, text_color=t.TEXT).grid(row=row, column=1, padx=(0, 12), pady=7, sticky='ew')
+                        fg_color=t.INSET, text_color=t.TEXT, font=t.font(13)).grid(row=row, column=1, padx=(0, 12), pady=7, sticky='ew')
         toolbar = ctk.CTkFrame(self, fg_color='transparent')
         toolbar.grid(row=2, column=0, sticky='ew', padx=22, pady=14)
         self.generate_button = button(toolbar, '生成合并工厂箱单', self.generate, width=175, state='disabled')
@@ -198,7 +198,7 @@ class FactoryTab(ctk.CTkFrame):
                 lambda *args: self.ask_worker('product_choice', *args),
                 lambda *args: self.ask_worker('option_choice', *args),
                 lambda message: self.events.put(('log', message)))
-            template = PROJECT_DIR / 'templates' / 'factory_notice.xlsx'
+            template = FACTORY_TEMPLATE
             destination = write_factory_workbook(rows, template, paths['output'])
             self.events.put(('success', (destination, len(rows), sum(row.cartons for row in rows))))
             try:
