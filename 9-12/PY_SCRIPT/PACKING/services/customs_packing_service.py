@@ -145,6 +145,21 @@ def read_customs_packing(path):
                 if header_row is None:
                     continue
                 columns, bottom = table_columns(raw_sheet, header_row)
+                # A vertically merged text cell belongs to every shipment row it spans.
+                # Numeric merges may be group totals, so never duplicate their quantities/weights.
+                shared_columns = {col.column for col in columns if col.key not in NUMERIC}
+                shared_merges = {}
+                for area in raw_sheet.merged_cells.ranges:
+                    if (area.min_col == area.max_col and area.min_col in shared_columns
+                            and area.min_row > bottom and area.max_row > area.min_row):
+                        shared_merges.setdefault(area.min_col, []).append(area)
+
+                def source_row(row, column):
+                    for area in shared_merges.get(column, ()):
+                        if area.min_row <= row <= area.max_row:
+                            return area.min_row
+                    return row
+
                 for r in range(bottom + 1, raw_sheet.max_row + 1):
                     raw_cells = [raw_sheet.cell(r, col.column) for col in columns]
                     if not any(has_value(cell.value) for cell in raw_cells):
@@ -157,7 +172,8 @@ def read_customs_packing(path):
                     if REQUIRED <= set(heading_columns(raw_sheet, r)):
                         continue  # Repeated page heading, not a shipment line.
                     warnings = []
-                    values = {col.key: convert_cell(sheet.cell(r, col.column), raw_sheet.cell(r, col.column),
+                    values = {col.key: convert_cell(sheet.cell(source_row(r, col.column), col.column),
+                                                   raw_sheet.cell(source_row(r, col.column), col.column),
                                                    col, raw_book.epoch, warnings) for col in columns}
                     for key in REQUIRED:
                         if not has_value(values.get(key)):

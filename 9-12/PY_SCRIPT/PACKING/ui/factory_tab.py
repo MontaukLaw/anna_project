@@ -16,6 +16,7 @@ from services.settings_service import read_settings, get_saved_path, save_file_p
 from ui import theme as t
 from ui.components import button, label, LogPanel
 from ui.packing_choice_dialog import PackingChoiceDialog
+from ui.pdf_selection import PdfSelection
 
 
 class FactoryOptionDialog(ctk.CTkToplevel):
@@ -65,7 +66,8 @@ class FactoryTab(ctk.CTkFrame):
         self.buttons = []
         self.path_vars = {}
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(3, weight=1)
+        self.grid_rowconfigure(2, weight=1)
+        self.grid_rowconfigure(4, weight=1)
         label(self, '自动工厂箱单生成', size=25).grid(row=0, column=0, padx=22, pady=(20, 12), sticky='w')
         sources = ctk.CTkFrame(self, fg_color=t.PANEL)
         sources.grid(row=1, column=0, padx=22, sticky='ew')
@@ -73,7 +75,6 @@ class FactoryTab(ctk.CTkFrame):
         for row, (key, title) in enumerate((('orders', '1. 订单 PDF 目录'),
                                           ('schedule', '2. 订单分类排期表'),
                                           ('product', '3. JP 产品资料表'),
-                                          ('customers', '4. 客户订单表目录'),
                                           ('output', '输出目录'))):
             control = button(sources, title, lambda k=key: self.browse(k), width=175)
             control.grid(row=row, column=0, padx=12, pady=7)
@@ -82,15 +83,17 @@ class FactoryTab(ctk.CTkFrame):
             self.path_vars[key] = value
             ctk.CTkEntry(sources, textvariable=value, state='readonly', height=36,
                         fg_color=t.INSET, text_color=t.TEXT, font=t.font(13)).grid(row=row, column=1, padx=(0, 12), pady=7, sticky='ew')
+        self.pdf_selection = PdfSelection(self, self.update_state)
+        self.pdf_selection.grid(row=2, column=0, padx=22, pady=(10, 0), sticky='nsew')
         toolbar = ctk.CTkFrame(self, fg_color='transparent')
-        toolbar.grid(row=2, column=0, sticky='ew', padx=22, pady=14)
+        toolbar.grid(row=3, column=0, sticky='ew', padx=22, pady=10)
         self.generate_button = button(toolbar, '生成合并工厂箱单', self.generate, width=175, state='disabled')
         self.generate_button.pack(side='left')
-        self.status = label(toolbar, '每个 item 一行 · 全部订单合并 · 文件名为总箱数.xlsx', color=t.MUTED)
+        self.status = label(toolbar, '每个 item 一行 · 仅合并勾选订单 · 文件名为总箱数.xlsx', color=t.MUTED)
         self.status.pack(side='left', padx=18)
         self.logs = LogPanel(self)
-        self.logs.grid(row=3, column=0, sticky='nsew', padx=22, pady=(0, 18))
-        self.logs.write('请选择资料和两个 PDF 目录。包含子目录；生成结果保存后自动用 Excel 打开。')
+        self.logs.grid(row=4, column=0, sticky='nsew', padx=22, pady=(0, 18))
+        self.logs.write('请选择订单 PDF 目录、排期表和产品资料，勾选要生成的订单。SO 留空，生成后可在 Excel 中补填。')
         self.after(100, self.poll)
         self.after(500, self.restore)
 
@@ -127,7 +130,7 @@ class FactoryTab(ctk.CTkFrame):
                 filetypes=[('Excel 工作簿', '*.xlsx')])
         else:
             value = filedialog.askdirectory(parent=self, title='选择' + {'orders': '订单 PDF 目录',
-                'customers': '客户订单表目录', 'output': '输出目录'}[key],
+                'output': '输出目录'}[key],
                 initialdir=initial if initial.is_dir() else PROJECT_DIR, mustexist=True)
         if value:
             self.set_path(key, Path(value))
@@ -135,6 +138,8 @@ class FactoryTab(ctk.CTkFrame):
     def set_path(self, key, path, remember=True):
         self.paths[key] = path
         self.path_vars[key].set(str(path))
+        if key == 'orders':
+            self.pdf_selection.set_files([], path)
         if key in ('product', 'schedule'):
             self.loading.add(key)
             if key == 'product':
@@ -146,21 +151,20 @@ class FactoryTab(ctk.CTkFrame):
         else:
             if remember:
                 self.remember(key, path)
-            if key in ('orders', 'customers'):
+            if key == 'orders':
                 self.loading.add(key)
                 Thread(target=self.scan, args=(key, path), daemon=True).start()
         self.update_state()
 
     def scan(self, key, path):
+        files = []
         try:
             files = scan_pdfs(path)
-            self.events.put(('log', f'{"订单" if key == "orders" else "客户订单表"}目录找到 {len(files)} 个 PDF：{path}'))
-            for file in files:
-                self.events.put(('log', f'  {file.relative_to(path)}'))
+            self.events.put(('log', f'订单目录找到 {len(files)} 个 PDF：{path}'))
         except Exception as exc:
             self.events.put(('log', f'目录扫描失败：{exc}'))
         finally:
-            self.events.put(('loaded', (key, None, path, False)))
+            self.events.put(('loaded', (key, files, path, False)))
 
     def load(self, key, path, remember):
         try:
@@ -174,7 +178,9 @@ class FactoryTab(ctk.CTkFrame):
         for (key, _), control in zip(self.path_vars.items(), self.buttons):
             control.configure(state='disabled' if self.busy or key in self.loading else 'normal')
         ready = (not self.busy and not self.loading and self.catalog is not None and self.schedule is not None
-                 and all(key in self.paths for key in ('orders', 'customers', 'output')))
+                 and all(key in self.paths for key in ('orders', 'output'))
+                 and bool(self.pdf_selection.selected_files()))
+        self.pdf_selection.set_enabled(not self.busy and 'orders' not in self.loading)
         self.generate_button.configure(state='normal' if ready else 'disabled',
                                        text='正在生成…' if self.busy else '生成合并工厂箱单')
 
@@ -187,17 +193,24 @@ class FactoryTab(ctk.CTkFrame):
     def generate(self):
         if self.busy or self.loading or self.catalog is None or self.schedule is None:
             return
+        selected = self.pdf_selection.selected_files()
+        if not selected:
+            self.logs.write('请至少勾选一个订单 PDF。', 'WARNING')
+            return
+        if not all(key in self.paths for key in ('orders', 'output')):
+            return
         self.busy = True
-        self.status.configure(text='正在读取全部订单并合并，请按提示选择冲突资料…')
+        self.status.configure(text=f'正在读取勾选的 {len(selected)} 个订单 PDF 并合并…')
+        self.logs.write(f'本次仅处理已勾选的 {len(selected)} 个订单 PDF。')
         self.update_state()
-        Thread(target=self.run, args=(dict(self.paths), self.catalog, self.schedule), daemon=True).start()
+        Thread(target=self.run, args=(dict(self.paths), self.catalog, self.schedule, selected), daemon=True).start()
 
-    def run(self, paths, catalog, schedule):
+    def run(self, paths, catalog, schedule, selected):
         try:
-            rows = collect_factory_rows(paths['orders'], paths['customers'], catalog, schedule,
+            rows = collect_factory_rows(paths['orders'], catalog, schedule,
                 lambda *args: self.ask_worker('product_choice', *args),
                 lambda *args: self.ask_worker('option_choice', *args),
-                lambda message: self.events.put(('log', message)))
+                lambda message: self.events.put(('log', message)), order_files=selected)
             template = FACTORY_TEMPLATE
             destination = write_factory_workbook(rows, template, paths['output'])
             self.events.put(('success', (destination, len(rows), sum(row.cartons for row in rows))))
@@ -218,12 +231,16 @@ class FactoryTab(ctk.CTkFrame):
                     self.logs.write(payload)
                 elif kind == 'loaded':
                     key, data, path, remember = payload
+                    if self.paths.get(key) != path:
+                        continue
                     self.loading.discard(key)
                     if key == 'product':
                         self.catalog = data
                     elif key == 'schedule':
                         self.schedule = data
-                    if data is not None:
+                    elif key == 'orders':
+                        self.pdf_selection.set_files(data or [], path)
+                    if data is not None and key in ('product', 'schedule'):
                         self.logs.write(f'资料已加载：{path}')
                         if remember:
                             self.remember(key, path)
@@ -243,7 +260,7 @@ class FactoryTab(ctk.CTkFrame):
                         ready.set()
                 elif kind == 'success':
                     destination, count, total = payload
-                    self.logs.write(f'已生成 {count} 行 / {total} 箱：{destination}')
+                    self.logs.write(f'已生成 {count} 行 / {total} 箱：{destination}；SO 已留空，请按需在 Excel 中补填。')
                     self.status.configure(text=f'生成完成：{count} 行 / {total} 箱 / {destination.name}')
                 elif kind == 'error':
                     self.logs.write(f'生成已停止，未输出本次箱单：{payload}', 'ERROR')

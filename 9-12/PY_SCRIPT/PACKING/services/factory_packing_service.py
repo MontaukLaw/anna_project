@@ -115,47 +115,19 @@ def slip_cartons(item, remarks):
     return count
 
 
-class BookingLookup:
-    def __init__(self, directory, choose, log):
-        self.files = {}
-        self.cache = {}
-        self.choose, self.log = choose, log
-        for path in scan_pdfs(directory):
-            self.files.setdefault(path.stem.casefold(), []).append(path)
-
-    def get(self, customer_po):
-        key = customer_po.strip().casefold()
-        if key in self.cache:
-            return self.cache[key]
-        paths = self.files.get(key, [])
-        values = {}
-        for path in paths:
-            text = '\n'.join(page.extract_text() or '' for page in PdfReader(path).pages)
-            for booking in re.findall(r'Shipper\s+booking\s+number\s*[:：]?\s*(SBK\d+)', text, re.I):
-                values.setdefault(booking.upper(), []).append(path)
-        if not values:
-            self.log(f'警告：客户订单 {customer_po} 未找到同名 PDF 或 Shipper booking number，SO 留空')
-            result = ''
-        elif len(values) == 1:
-            result = next(iter(values))
-        else:
-            labels = [f"{value}\n" + '\n'.join(str(p) for p in sources) for value, sources in values.items()]
-            selected = self.choose('订舱号冲突', f'客户订单：{customer_po}', labels)
-            if selected is None:
-                raise PackingDataError('已取消本次合并生成')
-            result = list(values)[selected]
-        self.cache[key] = result
-        return result
-
-
-def collect_factory_rows(pdf_directory, customer_directory, catalog, schedule,
-                         choose_product, choose_option, log=lambda message: None):
-    paths = scan_pdfs(pdf_directory)
+def collect_factory_rows(pdf_directory, catalog, schedule,
+                         choose_product, choose_option, log=lambda message: None, *, order_files=None):
+    # A supplied selection is a snapshot: never rescan and add unchecked/new files.
+    paths = scan_pdfs(pdf_directory) if order_files is None else list(dict.fromkeys(map(Path, order_files)))
     if not paths:
-        raise PackingDataError('订单目录中没有 PDF 文件')
+        raise PackingDataError('请至少勾选一个订单 PDF' if order_files is not None else '订单目录中没有 PDF 文件')
+    if order_files is not None:
+        directory = Path(pdf_directory).resolve()
+        for path in paths:
+            if not path.resolve().is_relative_to(directory) or path.suffix.lower() != '.pdf' or not path.is_file():
+                raise PackingDataError(f'已勾选的订单 PDF 不存在或不在所选目录中，请重新选择目录：{path}')
     lookup = PackingLookup(catalog, schedule)
     packaging = FactoryScheduleLookup(schedule)
-    bookings = BookingLookup(customer_directory, choose_option, log)
     rows, seen = [], {}
     for path in paths:
         log(f'读取订单 PDF：{path}')
@@ -163,7 +135,7 @@ def collect_factory_rows(pdf_directory, customer_directory, catalog, schedule,
         if order in seen:
             raise PackingDataError(f'采购订单 {order} 重复：{seen[order]} / {path}。请保留需要使用的一份，避免重复计数')
         seen[order] = path
-        items, customer = read_order_items(path, order, customer_from_ultimate=True)
+        items, customer = read_order_items(path, order, customer_from_name=True)
         pages = [page.extract_text() or '' for page in PdfReader(path).pages]
         remarks = extract_remarks(pages)
         if not items:
@@ -187,7 +159,7 @@ def collect_factory_rows(pdf_directory, customer_directory, catalog, schedule,
                 raise PackingDataError(f'{item.item_no}：所选资料缺少产品名称')
             if str(values.get('装箱数量')) != str(item.case_pack):
                 log(f'提示：{item.item_no} 资料装箱数量 {values.get("装箱数量")}；箱数仍按 PDF 每箱 {item.case_pack} 件计算')
-            row = FactoryRow(order, customer, item, record, requirement, bookings.get(item.customer_po),
+            row = FactoryRow(order, customer, item, record, requirement, '',
                              slip_cartons(item, remarks))
             rows.append(row)
             log(f'{order} / {item.item_no}：{row.cartons} 箱，'

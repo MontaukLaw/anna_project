@@ -9,6 +9,8 @@ import unicodedata
 
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
+from services.asn_quantity_service import quantities_with_units
+from services.hs_units_service import unit_name
 
 
 KINDS = ('装箱单', '香港合同', '形式发票')
@@ -66,6 +68,9 @@ class Item:
     unit: str = ''
     net_weight: Decimal | None = None
     gross_weight: Decimal | None = None
+    quantity_units: dict[str, Decimal] = field(default_factory=dict)
+    quantity_text: str = ''
+    quantity_unit: str = ''
 
 
 @dataclass
@@ -284,6 +289,18 @@ def read_document(path, kind, expected, audit):
         # Don't silently discard partially populated item rows.
         item = Item(str(values.get('name') or '').strip(), number(values.get('quantity')),
                     number(values.get('price')), number(values.get('amount')), sheet.ref(r, columns['name']))
+        item.quantity_text = str(values.get('quantity') or '')
+        if item.quantity is None:
+            item.quantity_units = quantities_with_units(values.get('quantity'))
+            candidates = [(unit, qty) for unit, qty in item.quantity_units.items()
+                          if item.price is not None and money_equal(qty * item.price, item.amount)]
+            if len(candidates) == 1:
+                item.quantity_unit, item.quantity = candidates[0]
+                audit.log(f'{path.name} 第 {r + 1} 行计价数量：{display(item.quantity)}{item.quantity_unit}；'
+                          f'按单价×数量与金额唯一匹配，保留全部单位数量：{item.quantity_units}')
+            elif item.quantity_units:
+                audit.check(False, f'{path.name} 第 {r + 1} 行计价数量',
+                            f'总数量={item.quantity_text}，无法按单价与金额唯一确定计价数量，请核实')
         for key in ('code', 'country', 'unit', 'specification'):
             raw = values.get(key)
             setattr(item, key, str(int(raw)) if isinstance(raw, float) and raw.is_integer() else str(raw or '').strip())
@@ -394,6 +411,12 @@ def compare_documents(documents, contract, audit):
             audit.log(f'{doc.kind} / {name}：' + '；'.join(f'单价 {display(price)}，数量 {display(qty)}，金额 {display(amounts[price])}' for price, qty in quantities.items()))
         audit.check(all(sig is not None for sig in signatures) and signatures[0] == signatures[1] == signatures[2],
                     f'商品 {name} 数量、单价、金额', '按品名及单价汇总比较，详见上方各单据数值')
+        for item in groups[0][name]:
+            if item.quantity_units:
+                units = {unit_name(entry.unit) for entry in groups[2][name] if entry.price == item.price}
+                audit.check(units == {item.quantity_unit}, f'商品 {name} 多单位计价数量',
+                            f'装箱单计价单位={item.quantity_unit}；发票单位={"、".join(sorted(units))}；'
+                            f'总数量原文={item.quantity_text}')
 
 
 def audit_directory(directory, emit=None):

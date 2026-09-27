@@ -1,20 +1,24 @@
 """ASN step one: select a directory and asynchronously reconcile three source documents."""
 from pathlib import Path
 from queue import Empty, Queue
-from threading import Thread
-from tkinter import filedialog
+from threading import Event, Thread
+from tkinter import filedialog, TclError
 import traceback
 
 import customtkinter as ctk
 
-from config import PROJECT_DIR, SETTINGS_FILE, ASN_LOG_DIR, ASN_TEMPLATE
+from config import (PROJECT_DIR, SETTINGS_FILE, ASN_LOG_DIR, ASN_TEMPLATE,
+                    ZHONGTONG_ASN_TEMPLATE, XINGHUI_ASN_TEMPLATE)
 from services.asn_service import audit_directory, result_messages
 from services.asn_log_service import DailyAuditLog
 from services.customs_packing_service import (read_customs_packing, row_message, packing_summary,
                                              result_columns, header_message)
 from services.settings_service import get_saved_path, read_settings, save_file_path, save_settings
 from services.asn_generation_service import build_asn_plan, write_asn_workbook, generation_options, product_key
+from services.asn_warehouse import WAREHOUSES, warehouse_profile
+from services.hs_units_service import LegalUnitCancelled, load_legal_units
 from ui.asn_generation_dialog import AsnGenerationDialog
+from ui.asn_unit_dialog import AsnUnitDialog
 from ui import theme as t
 from ui.components import LogPanel, button, label
 
@@ -23,12 +27,15 @@ class AsnTab(ctk.CTkFrame):
     def __init__(self, parent):
         super().__init__(parent, fg_color=t.BG)
         self.events = Queue()
+        self.closed = Event()
+        self.bind('<Destroy>', lambda event: self.closed.set() if event.widget is self else None, add='+')
         self.busy = False
         self.report = None
         self.directory = None
         self.customs_path = None
         self.customs_data = None
         self.output_directory = None
+        self.warehouse_var = ctk.StringVar(value='yixing')
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(3, weight=1)
         header = ctk.CTkFrame(self, fg_color='transparent')
@@ -63,8 +70,20 @@ class AsnTab(ctk.CTkFrame):
                          row=3, column=0, sticky='ew', padx=(18, 12), pady=(0, 16))
         self.output_button = button(source, '选择输出目录', self.browse_output, width=156)
         self.output_button.grid(row=3, column=1, padx=(0, 18), pady=(0, 16))
-        label(source, '核对通过并读取海关装箱单后，即可生成 ASN。', color=t.MUTED).grid(
-            row=4, column=0, sticky='w', padx=18, pady=(0, 16))
+        warehouse_choices = ctk.CTkFrame(source, fg_color='transparent')
+        warehouse_choices.grid(row=4, column=0, sticky='w', padx=18, pady=(0, 16))
+        label(warehouse_choices, '生成仓库', color=t.MUTED).pack(side='left', padx=(0, 20))
+        self.warehouse_buttons = {}
+        for key, profile in WAREHOUSES.items():
+            radio = ctk.CTkRadioButton(
+                warehouse_choices, text=f'{profile.label} ASN', variable=self.warehouse_var,
+                value=key, command=self.change_warehouse, font=t.font(13),
+                text_color=t.TEXT, fg_color=t.ACCENT, hover_color=t.BUTTON_HOVER,
+                border_color=t.MUTED, radiobutton_width=18, radiobutton_height=18)
+            radio.pack(side='left', padx=(0, 24))
+            self.warehouse_buttons[key] = radio
+        label(source, '核对通过并读取海关装箱单后，按所选仓库生成 ASN。', color=t.MUTED).grid(
+            row=5, column=0, columnspan=2, sticky='w', padx=18, pady=(0, 12))
         self.generate_button = button(source, '生成 ASN', self.generate, width=156, state='disabled')
         self.generate_button.grid(row=4, column=1, padx=(0, 18), pady=(0, 16))
         self.status = label(self, '等待选择目录', font=t.font(17, 'bold'), color=t.ACCENT,
@@ -80,6 +99,8 @@ class AsnTab(ctk.CTkFrame):
         self.logs.write('请选择单据目录。')
         try:
             settings = read_settings(SETTINGS_FILE)
+            if settings.get('asn_warehouse') in WAREHOUSES:
+                self.warehouse_var.set(settings['asn_warehouse'])
             self.directory = get_saved_path(settings, SETTINGS_FILE, 'asn_directory_file')
             if self.directory:
                 self.path_var.set(str(self.directory))
@@ -92,6 +113,18 @@ class AsnTab(ctk.CTkFrame):
         except (ValueError, OSError) as exc:
             self.logs.write(f'上次目录读取失败：{exc}', 'WARNING')
         self.after(100, self.poll)
+
+    def change_warehouse(self):
+        try:
+            save_settings(SETTINGS_FILE, {'asn_warehouse': self.warehouse_var.get()})
+        except (OSError, ValueError) as exc:
+            self.logs.write(f'仓库已切换，但配置保存失败：{exc}', 'WARNING')
+
+    @staticmethod
+    def warehouse_template(warehouse):
+        warehouse_profile(warehouse)
+        return {'yixing': ASN_TEMPLATE, 'zhongtong': ZHONGTONG_ASN_TEMPLATE,
+                'xinghui': XINGHUI_ASN_TEMPLATE}[warehouse]
 
     def browse(self):
         if self.busy:
@@ -215,6 +248,8 @@ class AsnTab(ctk.CTkFrame):
 
     def update_generate_state(self):
         self.output_button.configure(state='disabled' if self.busy else 'normal')
+        for control in self.warehouse_buttons.values():
+            control.configure(state='disabled' if self.busy else 'normal')
         ready = (not self.busy and self.report is not None and self.report.passed
                  and self.customs_data is not None and not self.customs_data.warnings)
         self.generate_button.configure(state='normal' if ready else 'disabled')
@@ -230,7 +265,9 @@ class AsnTab(ctk.CTkFrame):
                 if dialog.result is None:
                     return
                 options = dialog.result
-            build_asn_plan(self.report, self.customs_data, ASN_TEMPLATE, options)
+            options['warehouse'] = self.warehouse_var.get()
+            template = self.warehouse_template(options['warehouse'])
+            build_asn_plan(self.report, self.customs_data, template, options, validate_only=True)
             options['source_items'] = [(item.name, str(item.price), item.code)
                                        for item in self.report.documents[options['contract']]['装箱单'].items]
             if self.output_directory is None or not self.output_directory.is_dir():
@@ -251,28 +288,62 @@ class AsnTab(ctk.CTkFrame):
         self.generate_button.configure(text='正在生成…')
         self.logs.clear()
         self.logs.textbox.configure(wrap='word')
-        self.status.configure(text='正在重新核对源文件并生成 ASN…', text_color=t.ACCENT)
+        self.status.configure(text=f'正在重新核对源文件并生成{warehouse_profile(options["warehouse"]).label} ASN…', text_color=t.ACCENT)
         Thread(target=self.run_generation, args=(self.directory, self.customs_path, Path(output), options), daemon=True).start()
 
     def run_generation(self, directory, customs_path, output, options):
         journal = DailyAuditLog(ASN_LOG_DIR)
-        journal.write(f'生成 ASN：三单目录={directory}；PL={customs_path}；输出={output}', 'START')
+        warehouse = options.get('warehouse', 'yixing')
+        journal.write(f'生成{warehouse_profile(warehouse).label} ASN：三单目录={directory}；PL={customs_path}；输出={output}', 'START')
         try:
             # Fresh reads prevent a workbook changed since selection from being exported using stale data.
             report = audit_directory(directory, journal.write)
             packing = read_customs_packing(customs_path)
-            plan = build_asn_plan(report, packing, ASN_TEMPLATE, options)
-            journal.write(f'境外收货人（海关装箱单 Customer）：{plan["headers"]["C8"]}')
-            journal.write(f'合同及商品对应：{options!r}；单位来自发票；第二数量=净重/千克；P/O=CUSTOMER ORDER NO；申报日期=当天；车牌留空')
+            build_asn_plan(report, packing, self.warehouse_template(warehouse), options, validate_only=True)
+            def query_log(message):
+                warning = message.startswith('警告：')
+                journal.write(message, 'WARNING' if warning else 'INFO')
+                if warning:
+                    self.events.put(('customs_message', (message, 'WARNING')))
+                else:
+                    self.events.put(('generation_progress', message))
+            items = report.documents[options['contract']]['装箱单'].items
+            def resolve_failure(code, error):
+                details = '\n'.join(f'{item.name}；装箱单总数量：{item.quantity_text or item.quantity}'
+                                    for item in items if item.code == code)
+                return self.request_legal_units(code, error, details)
+            options = dict(options, legal_units=load_legal_units(
+                (item.code for item in items), query_log, on_failure=resolve_failure))
+            query_log('法定单位已就绪，正在核对 ASN 填写数据…')
+            plan = build_asn_plan(report, packing, self.warehouse_template(warehouse), options)
+            journal.write(f'境外收货人（海关装箱单 Customer）：{plan["consignee"]}')
+            journal.write(f'合同及商品对应：{options!r}；计价单位来自发票；法定单位来源见各商品查询记录；P/O=CUSTOMER ORDER NO；申报日期=当天；车牌留空')
+            for message in plan['legal_log']:
+                journal.write(message)
+            query_log('正在使用 Excel 填写并保存 ASN，请稍候…')
             destination = write_asn_workbook(plan, output)
             journal.write(f'ASN 已保存：{destination}；明细 {len(plan["rows"])} 行', 'SUCCESS')
             outcome = ('generation_done', (destination, len(plan['rows'])))
+        except LegalUnitCancelled as exc:
+            journal.write(str(exc), 'INFO')
+            outcome = ('generation_cancelled', str(exc))
         except Exception as exc:
             journal.write(traceback.format_exc(), 'ERROR')
             outcome = ('generation_error', str(exc))
         journal.write('ASN 生成结束', 'END')
         self.events.put(('log_file', (journal.paths, journal.error)))
         self.events.put(outcome)
+
+    def request_legal_units(self, code, error, details):
+        # Only the main thread opens Tk windows; the worker waits for an explicit choice.
+        answer = Queue(maxsize=1)
+        self.events.put(('legal_units_choice', (code, error, details, answer)))
+        while not self.closed.is_set():
+            try:
+                return answer.get(timeout=0.2)
+            except Empty:
+                pass
+        return None
 
     def poll(self):
         try:
@@ -287,17 +358,34 @@ class AsnTab(ctk.CTkFrame):
                         self.log_location.configure(text='详细日志：' + '；'.join(str(path) for path in paths))
                 elif kind == 'customs_message':
                     self.logs.write(*value)
-                elif kind in ('generation_done', 'generation_error'):
+                elif kind == 'generation_progress':
+                    self.status.configure(text=value, text_color=t.ACCENT)
+                elif kind == 'legal_units_choice':
+                    code, error, details, answer = value
+                    choice = None
+                    try:
+                        self.status.configure(text=f'商品编码 {code} 查询失败，等待选择处理方式', text_color='#FFD18A')
+                        dialog = AsnUnitDialog(self, code, error, details)
+                        self.wait_window(dialog)
+                        choice = dialog.result
+                    finally:
+                        answer.put(choice)
+                    if self.closed.is_set():
+                        return
+                elif kind in ('generation_done', 'generation_error', 'generation_cancelled'):
                     self.busy = False
                     self.select_button.configure(state='normal')
                     self.customs_button.configure(state='normal')
                     self.generate_button.configure(text='生成 ASN')
-                    if kind == 'generation_error':
+                    if kind == 'generation_cancelled':
+                        self.status.configure(text='已取消 ASN 生成', text_color=t.MUTED)
+                        self.logs.write('已取消本次生成，未输出 ASN 文件。')
+                    elif kind == 'generation_error':
                         self.status.configure(text='ASN 未生成，请处理下方问题', text_color='#FF8585')
                         self.logs.write(f'生成失败：{value}', 'ERROR')
                     else:
                         path, count = value
-                        self.status.configure(text=f'ASN 已生成 · {count} 行明细', text_color='#83DDB2')
+                        self.status.configure(text=f'{warehouse_profile(self.warehouse_var.get()).label} ASN 已生成 · {count} 行明细', text_color='#83DDB2')
                         self.logs.write(f'已保存：{path}', 'SUCCESS')
                     self.update_generate_state()
                 elif kind in ('customs_done', 'customs_error'):
@@ -333,4 +421,8 @@ class AsnTab(ctk.CTkFrame):
                     self.update_generate_state()
         except Empty:
             pass
+        except TclError:
+            if self.closed.is_set():
+                return
+            raise
         self.after(100, self.poll)

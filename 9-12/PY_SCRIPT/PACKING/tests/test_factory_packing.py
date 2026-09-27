@@ -11,7 +11,7 @@ from config import PROJECT_DIR
 from models.packing import OrderItem, PackingDataError
 from services.factory_excel_service import write_factory_workbook, FACTORY_REMINDER, SHIPPING_FIELDS
 from services.factory_packing_service import (
-    BookingLookup, FactoryRow, FactoryScheduleLookup, collect_factory_rows, slip_cartons,
+    FactoryRow, FactoryScheduleLookup, collect_factory_rows, slip_cartons,
 )
 from services.product_catalog_service import read_product_catalog
 from services.schedule_service import OrderSchedule, read_order_schedule
@@ -32,6 +32,43 @@ def record():
 
 
 class FactoryPackingTests(unittest.TestCase):
+    def test_explicit_pdf_selection_excludes_other_orders_and_is_not_rescanned(self):
+        with TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            chosen, excluded = folder / 'chosen.pdf', folder / 'excluded.pdf'
+            chosen.touch()
+            excluded.touch()
+            order_item = item(quantity=8, pack=4)
+            order_item.packaging = 'BOX'
+            reader = Mock(pages=[Mock(extract_text=lambda: '')])
+            with patch('services.factory_packing_service.scan_pdfs', side_effect=AssertionError('No order rescan')), \
+                 patch('services.factory_packing_service.PackingLookup') as lookup, \
+                 patch('services.factory_packing_service.FactoryScheduleLookup') as schedule, \
+                 patch('services.factory_packing_service.read_order_number', return_value='POHK-26-13545-001') as order, \
+                 patch('services.factory_packing_service.read_order_items', return_value=([order_item], 'Customer')) as read, \
+                 patch('services.factory_packing_service.PdfReader', return_value=reader) as pdf:
+                lookup.return_value.product_candidates.return_value = [record()]
+                schedule.return_value.packaging.return_value = '包装'
+                rows = collect_factory_rows(folder, Mock(), Mock(), Mock(), Mock(), order_files=[chosen])
+                self.assertEqual(len(rows), 1)
+                self.assertEqual(rows[0].cartons, 2)
+                self.assertEqual(rows[0].booking, '')
+                order.assert_called_once_with(chosen)
+                self.assertEqual(read.call_args.args[0], chosen)
+                pdf.assert_called_once_with(chosen)
+                with self.assertRaisesRegex(PackingDataError, '重复'):
+                    collect_factory_rows(folder, Mock(), Mock(), Mock(), Mock(), order_files=[chosen, excluded])
+
+    def test_empty_or_missing_selected_pdf_stops_without_falling_back_to_all(self):
+        with TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            (folder / 'unselected.pdf').touch()
+            with patch('services.factory_packing_service.scan_pdfs') as scan:
+                for selection, error in [([], '至少勾选'), ([folder / 'deleted.pdf'], '不存在')]:
+                    with self.subTest(selection=selection), self.assertRaisesRegex(PackingDataError, error):
+                        collect_factory_rows(folder, Mock(), Mock(), Mock(), Mock(), order_files=selection)
+                scan.assert_not_called()
+
     def test_schedule_customers_do_not_affect_packaging_lookup(self):
         lookup = FactoryScheduleLookup(OrderSchedule(Path('s.xlsx'), {'#28483': [
             ('生产订单号', '长编号', '客户', '包装要求'),
@@ -82,25 +119,6 @@ class FactoryPackingTests(unittest.TestCase):
             ('生产订单号', '包装要求'), ('POHK-26-13545', '旧包装'),
             ('POHK-26-13545-001', '新包装')]}))
         self.assertEqual(lookup.packaging('POHK-26-13545-001', item(), Mock()), '新包装')
-
-    def test_booking_filename_exact_match_and_conflict_selection(self):
-        with TemporaryDirectory() as temp:
-            root = Path(temp)
-            (root / 'sub').mkdir()
-            for name in ('001234.pdf', 'sub/001234.PDF', '1001234.pdf'):
-                (root / name).touch()
-            reader = Mock()
-            reader.pages = [Mock(extract_text=lambda: 'Shipper booking number\nSBK0004632022')]
-            other = Mock()
-            other.pages = [Mock(extract_text=lambda: 'Shipper booking number: SBK0004632023')]
-            choose, log = Mock(return_value=1), Mock()
-            with patch('services.factory_packing_service.PdfReader', side_effect=[reader, other]) as read:
-                lookup = BookingLookup(root, choose, log)
-                self.assertEqual(lookup.get('001234'), 'SBK0004632023')
-                self.assertEqual(lookup.get('001234'), 'SBK0004632023')
-                self.assertEqual(read.call_count, 2)
-                self.assertEqual(lookup.get('missing'), '')
-                log.assert_called_once()
 
     def test_known_unnamed_jp_column_is_supported(self):
         with TemporaryDirectory() as temp:
@@ -162,21 +180,20 @@ class FactoryPackingTests(unittest.TestCase):
         catalog = read_product_catalog(sample / 'JP产品净重毛重外箱尺寸表20241209.xlsx')
         schedule = read_order_schedule(sample / '2026年 可图雅JP订单分类排期汇总（9-12更新).xlsx')
         pdf = next((sample / 'po_list').glob('*.pdf'))
-        booking_pdf = next(sample.rglob('1003449527.pdf'))
         choose = lambda order_item, candidates, hint: (candidates[0], order_item.description)
-        with patch('services.factory_packing_service.scan_pdfs', side_effect=[[pdf, pdf], [booking_pdf]]), \
+        with patch('services.factory_packing_service.scan_pdfs', return_value=[pdf, pdf]), \
              patch('services.factory_packing_service.read_order_number', side_effect=['POHK-26-13545-001', 'POHK-26-13545-002']), \
              patch('services.factory_packing_service.read_order_items', wraps=__import__(
                  'services.order_pdf_service', fromlist=['read_order_items']).read_order_items) as read:
             # Both input files supply real parsed sample rows; vary the PO for the second input.
             from services.order_pdf_service import read_order_items
             read.side_effect = lambda path, order, **kwargs: read_order_items(path, 'POHK-26-13545-001', **kwargs)
-            rows = collect_factory_rows(sample / 'po_list', sample, catalog, schedule, choose, Mock())
+            rows = collect_factory_rows(sample / 'po_list', catalog, schedule, choose, Mock())
             self.assertEqual(len(rows), 4)
             self.assertEqual(sum(r.cartons for r in rows), 4560)
-        with patch('services.factory_packing_service.scan_pdfs', side_effect=[[pdf, pdf], [booking_pdf]]):
+        with patch('services.factory_packing_service.scan_pdfs', return_value=[pdf, pdf]):
             with self.assertRaisesRegex(PackingDataError, '重复'):
-                collect_factory_rows(sample / 'po_list', sample, catalog, schedule, choose, Mock())
+                collect_factory_rows(sample / 'po_list', catalog, schedule, choose, Mock())
 
     def test_real_sample_has_2280_cartons_and_10_plus_4_slips(self):
         sample = PROJECT_DIR / '工厂箱单'
@@ -191,12 +208,12 @@ class FactoryPackingTests(unittest.TestCase):
             carton = next(r for r in candidates if '卡板' not in str(r['values']['产品名称']))
             return carton, order_item.description
 
-        rows = collect_factory_rows(sample / 'po_list', sample, catalog, schedule, choose,
+        rows = collect_factory_rows(sample / 'po_list', catalog, schedule, choose,
                                     lambda *args: self.fail('Unexpected conflict'))
         self.assertEqual(len(choices), 2)
         self.assertEqual([r.cartons for r in rows], [1800, 480])
         self.assertEqual([r.cartons / r.cartons_per_slip for r in rows], [10, 4])
-        self.assertTrue(all(r.booking == 'SBK0004632022' for r in rows))
+        self.assertTrue(all(r.booking == '' for r in rows))
         self.assertEqual([r.customer for r in rows], ['Wal-Mart Store Inc.', 'Wal-Mart Store Inc.'])
         self.assertEqual([r.item.customer_item_no for r in rows], ['678696951', '678696954'])
         with TemporaryDirectory() as temp:
@@ -208,6 +225,9 @@ class FactoryPackingTests(unittest.TestCase):
             self.assertEqual(book.active['A4'].value, 'Wal-Mart Store Inc.')
             self.assertEqual(book.active['F9'].value, FACTORY_REMINDER)
             self.assertEqual(book.active['P15'].value, '车牌：')
+            self.assertIsNone(book.active['Y4'].value)
+            self.assertIsNone(book.active['Y5'].value)
+            self.assertFalse(book.active.protection.sheet)
             book.close()
 
 

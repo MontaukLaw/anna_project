@@ -3,6 +3,7 @@ from datetime import date
 from decimal import Decimal as D
 import os
 from pathlib import Path
+import subprocess
 from tempfile import TemporaryDirectory
 import unittest
 
@@ -12,6 +13,7 @@ from config import ASN_TEMPLATE
 from models.customs_packing import CustomsPackingData, CustomsPackingRow
 from services.asn_service import AuditReport, Document, Item, audit_directory
 from services.customs_packing_service import read_customs_packing
+from services.hs_units_service import LegalUnits
 from services.asn_generation_service import (build_asn_plan, generation_options, product_key,
                                              write_asn_workbook, output_filename)
 
@@ -27,6 +29,7 @@ def fixture():
             for kind, entry in [('装箱单', item), ('香港合同', sale), ('形式发票', invoice)]}
     report = AuditReport(documents={'TEST001': docs}, checks=1)
     values = {'customer': 'Just Play LLC', 'item': '00123', 'chinese_name': '测试商品',
+              'customer_item': '000987-SKU',
               'customer_order': '000123-PO', 'so': 'SO001', 'quantity': D(4), 'cartons': D(1),
               'per_carton': D(4), 'price': D('7.5'), 'length': D(40), 'width': D(30),
               'height': D(20), 'volume': D('.024'), 'net_weight': D('2.7'), 'gross_weight': D('3.44')}
@@ -40,21 +43,23 @@ class AsnGenerationTests(unittest.TestCase):
         self.report, self.packing = fixture()
 
     def plan(self):
-        return build_asn_plan(self.report, self.packing, ASN_TEMPLATE, generation_options(self.report, self.packing))
+        options = generation_options(self.report, self.packing)
+        options['legal_units'] = {'9503008390': LegalUnits('个', '千克')}
+        return build_asn_plan(self.report, self.packing, ASN_TEMPLATE, options)
 
     def test_confirmed_rules_and_original_row_order(self):
         plan = self.plan()
-        self.assertEqual(plan['scope'], 'asn_only')
+        self.assertEqual(plan['scope'], 'all')
         self.assertEqual(plan['headers']['C5'], date.today().isoformat())
         self.assertEqual(plan['headers']['G13'], '2026-05-10')
         self.assertEqual(len(plan['rows']), 2)
         self.assertEqual([r[1] for r in plan['rows']], ['SO001', 'SO002'])
         row = plan['rows'][0]
-        self.assertEqual([row[i] for i in (12, 27, 32)], ['套'] * 3)
+        self.assertEqual([row[i] for i in (12, 27, 32)], ['套', '套', '个'])
         self.assertEqual(row[4], '000123-PO')
         self.assertEqual(row[5], '00123')
         self.assertEqual(row[33:35], [2.7, '千克'])
-        self.assertEqual(row[43:46], ['中国', '达州市', '51169'])
+        self.assertEqual(row[43:46], ['中国', '达州市', 51169])
         self.assertIsNone(row[20])
         self.assertEqual(plan['formulas'][1], {'cell': 'AD27', 'value': '=ROUND(AA27*AC27,2)'})
 
@@ -78,6 +83,7 @@ class AsnGenerationTests(unittest.TestCase):
         updated = self.plan()
         self.assertEqual(updated['headers']['C8'], customer)
         original['headers']['C8'] = customer
+        original['consignee'] = customer
         self.assertEqual(updated, original)
 
     def test_customer_missing_or_conflicting_is_not_guessed(self):
@@ -142,9 +148,26 @@ class AsnGenerationTests(unittest.TestCase):
             book = xlrd.open_workbook(str(path), formatting_info=True)
             template = xlrd.open_workbook(str(ASN_TEMPLATE), formatting_info=True)
             try:
-                self.assertEqual(book.sheet_names(), ['报关资料与ASN'])
-                sheet = book.sheet_by_index(0)
+                self.assertEqual(book.sheet_names(), template.sheet_names())
+                for other in template.sheets():
+                    if other.name == '报关资料与ASN':
+                        continue
+                    copied = book.sheet_by_name(other.name)
+                    self.assertEqual((copied.nrows, copied.ncols, copied.visibility),
+                                     (other.nrows, other.ncols, other.visibility), other.name)
+                    self.assertEqual(sorted(copied.merged_cells), sorted(other.merged_cells), other.name)
+                    self.assertEqual({c: v.width for c, v in copied.colinfo_map.items()},
+                                     {c: v.width for c, v in other.colinfo_map.items()}, other.name)
+                    self.assertEqual({r: v.height for r, v in copied.rowinfo_map.items()},
+                                     {r: v.height for r, v in other.rowinfo_map.items()}, other.name)
+                sheet = book.sheet_by_name('报关资料与ASN')
                 self.assertEqual(sheet.cell_value(7, 2), customer)
+                self.assertEqual(sheet.cell_type(4, 2), xlrd.XL_CELL_DATE)
+                self.assertEqual(xlrd.xldate_as_datetime(sheet.cell_value(4, 2), book.datemode).date(), date.today())
+                self.assertEqual(sheet.cell_type(12, 6), xlrd.XL_CELL_DATE)
+                self.assertEqual(xlrd.xldate_as_datetime(sheet.cell_value(12, 6), book.datemode).date(), date(2026, 5, 10))
+                self.assertEqual(sheet.cell_type(25, 45), xlrd.XL_CELL_NUMBER)
+                self.assertEqual(sheet.cell_value(25, 45), 51169)
                 self.assertEqual(sheet.cell_value(25, 5), '00123')
                 self.assertEqual(sheet.cell_value(25, 29), 30)
                 self.assertEqual(sheet.cell_value(26, 29), 30)
@@ -159,6 +182,14 @@ class AsnGenerationTests(unittest.TestCase):
             finally:
                 book.release_resources()
                 template.release_resources()
+            comparison = subprocess.run(
+                ['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+                 '-File', str(Path(__file__).with_name('compare_asn_template.ps1')),
+                 '-TemplatePath', str(ASN_TEMPLATE), '-OutputPath', str(path)],
+                capture_output=True, text=True, encoding='utf-8', errors='replace',
+                creationflags=subprocess.CREATE_NO_WINDOW, timeout=120)
+            self.assertEqual(comparison.returncode, 0, comparison.stdout + comparison.stderr)
+            self.assertIn('PRESERVED_SHEETS=13', comparison.stdout)
             with self.assertRaises(FileExistsError):
                 write_asn_workbook(self.plan(), folder)
         self.assertEqual(ASN_TEMPLATE.read_bytes(), original)
@@ -170,11 +201,13 @@ class AsnGenerationTests(unittest.TestCase):
             self.skipTest('Local sample unavailable')
         report = audit_directory(directory)
         packing = read_customs_packing(sources[0])
-        plan = build_asn_plan(report, packing, ASN_TEMPLATE, generation_options(report, packing))
+        options = generation_options(report, packing)
+        options['legal_units'] = {'9503008390': LegalUnits('个', '千克')}
+        plan = build_asn_plan(report, packing, ASN_TEMPLATE, options)
         self.assertEqual(len(plan['rows']), 12)
         self.assertEqual(sum(r[9] for r in plan['rows']), 309)
         self.assertEqual(sum(r[11] for r in plan['rows']), 1236)
-        self.assertTrue(all(r[12] == r[27] == r[32] == '套' for r in plan['rows']))
+        self.assertTrue(all(r[12] == r[27] == '套' and r[32] == '个' for r in plan['rows']))
 
     @unittest.skipUnless(os.name == 'nt', 'Requires Windows and Microsoft Excel')
     def test_native_single_row_and_extension_beyond_sample(self):
@@ -190,7 +223,7 @@ class AsnGenerationTests(unittest.TestCase):
                 path = write_asn_workbook(self.plan(), folder)
                 book = xlrd.open_workbook(str(path))
                 try:
-                    sheet = book.sheet_by_index(0)
+                    sheet = book.sheet_by_name('报关资料与ASN')
                     actual = [sheet.cell_value(r, 1) for r in range(25, sheet.nrows) if sheet.cell_value(r, 1)]
                     self.assertEqual(actual, [f'SO-{i + 1:03}' for i in range(count)])
                     self.assertEqual(sheet.cell_value(24 + count, 29), 30)

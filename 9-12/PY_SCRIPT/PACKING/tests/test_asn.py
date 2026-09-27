@@ -105,6 +105,24 @@ class AsnTests(unittest.TestCase):
                 self.assertLess(identity, detail)
                 self.write(kind)
 
+    def test_multi_unit_quantity_keeps_pricing_and_checks_invoice_unit(self):
+        self.write('装箱单', {'N10': '1236套 14832个'})
+        report = audit_directory(self.directory)
+        self.assertTrue(report.passed, self.errors(report))
+        item = report.documents[CONTRACT]['装箱单'].items[0]
+        self.assertEqual(item.quantity, 1236)
+        self.assertEqual(item.quantity_units, {'套': Decimal(1236), '个': Decimal(14832)})
+        self.assertEqual(item.quantity_unit, '套')
+        self.write('形式发票', {'E11': '个'})
+        report = audit_directory(self.directory)
+        self.assertFalse(report.passed)
+        self.assertIn('多单位计价数量', self.errors(report))
+
+    def test_malformed_unit_quantities_do_not_pass(self):
+        for value in ('1236套 14832个 待确认', '1236套 1236套'):
+            self.write('装箱单', {'N10': value})
+            self.assertFalse(audit_directory(self.directory).passed)
+
     def test_missing_and_duplicate_files_never_pass(self):
         invoice = self.directory / f'形式发票{CONTRACT}.xlsx'
         invoice.unlink()

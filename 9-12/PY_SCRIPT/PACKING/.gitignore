@@ -5,3 +5,5 @@ output/
 logs/
 build/
 dist/
+hs_units_cache.json
+hs_units_cache.json.*.bak
